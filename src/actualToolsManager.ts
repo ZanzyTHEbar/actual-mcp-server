@@ -11,18 +11,18 @@ type ToolDefinition = {
   name: string;
   description: string;
   call: (args: any) => Promise<any>;
-  inputSchema?: ZodTypeAny; // <-- make sure this line exists exactly here
+  inputSchema?: ZodTypeAny; 
 };
 
-// ✅ List of tools that YOU have already implemented in this class.
-// Add the tool name here once you fully implement it.
+// ✅ List of tools already implemented in this class.
+// Adding the tool name here is considered fully implemented.
 const IMPLEMENTED_TOOLS = [
-  'get_accounts', // Example: already implemented below
+  'get_accounts', 
+  'get_account_balance',
 ];
 
 // 🔑 Mapping of Actual API function names → your MCP tool names
-// This allows us to compare what exists in the API vs. what you’ve wrapped.
-// Add new entries here as you expand support.
+// This allows us to compare what exists in the API vs. what it has been wrapped.
 const API_TOOL_MAP: Record<string, string> = {
   getAccounts: 'get_accounts',
   createAccount: 'create_account',
@@ -88,9 +88,6 @@ class ActualToolsManager {
     logger.info('✅ Implemented tools: ' + IMPLEMENTED_TOOLS.join(', '));
     logger.info('🛠️ Available but not yet implemented: ' + missingTools.join(', '));
 
-    // --------------------
-    // Example: Implemented tool
-    // --------------------
     this.tools.set('get_accounts', {
       name: 'get_accounts',
       description: 'List all accounts',

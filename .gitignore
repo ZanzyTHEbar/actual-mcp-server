@@ -38,6 +38,7 @@ build/
 
 # VS Code settings
 .vscode/
+*.code-workspace
 
 # macOS system files
 .DS_Store

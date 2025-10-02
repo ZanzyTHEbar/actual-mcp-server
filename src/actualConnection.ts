@@ -1,65 +1,54 @@
-// src/actualConnection.ts
-import logger from './logger.js';
-import * as ActualApi from '@actual-app/api';
 import fs from 'fs';
-import actualToolsManager from './actualToolsManager.js';
+import path from 'path';
+import os from 'os';
+import api from '@actual-app/api';
+import logger from './logger.js';
+
+const DEFAULT_DATA_DIR = path.resolve(os.homedir() || '.', '.actual');
+
+let initialized = false;
+let initializing = false;
+let initializationError: Error | null = null;
 
 export async function connectToActual() {
-  const SERVER_URL = process.env.ACTUAL_SERVER_URL || '';
-  const PASSWORD = process.env.ACTUAL_PASSWORD || '';
-  const BUDGET_SYNC_ID = process.env.ACTUAL_BUDGET_SYNC_ID || '';
-  const DATA_DIR = process.env.MCP_BRIDGE_DATA_DIR || './actual-data';
-
-/*  // Remove corrupted cache folder if suspected to avoid JSON parse errors
-  if (fs.existsSync(DATA_DIR)) {
-    try {
-      fs.rmSync(DATA_DIR, { recursive: true, force: true });
-      logger.warn('Corrupted actual-data cache removed, fresh sync will occur.');
-    } catch (err) {
-      logger.warn('Failed to remove actual-data cache:', err);
-    }
+  if (initialized) return;
+  if (initializing) {
+    while (initializing) await new Promise(r => setTimeout(r, 100));
+    if (initializationError) throw initializationError;
+    return;
   }
-*/
-
-  // Recreate data directory to ensure it exists
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-
-  if (!SERVER_URL) throw new Error('ACTUAL_SERVER_URL environment variable is not set');
-  if (!BUDGET_SYNC_ID) throw new Error('ACTUAL_BUDGET_SYNC_ID environment variable is not set or empty');
+  initializing = true;
 
   try {
+    const SERVER_URL = process.env.ACTUAL_SERVER_URL;
+    const PASSWORD = process.env.ACTUAL_PASSWORD;
+    const BUDGET_SYNC_ID = process.env.ACTUAL_BUDGET_SYNC_ID;
+    const DATA_DIR = process.env.MCP_BRIDGE_DATA_DIR || DEFAULT_DATA_DIR;
+
+    if (!SERVER_URL) throw new Error('ACTUAL_SERVER_URL not set');
+    if (!PASSWORD) throw new Error('ACTUAL_PASSWORD not set');
+    if (!BUDGET_SYNC_ID) throw new Error('ACTUAL_BUDGET_SYNC_ID not set');
     new URL(SERVER_URL);
-  } catch {
-    throw new Error(`ACTUAL_SERVER_URL is not a valid URL: "${SERVER_URL}"`);
-  }
 
-  logger.info('==================================================');
-  logger.info('🟢 ACTUAL FINANCE CONFIGURATION');
-  logger.info(`• Server URL:           ${SERVER_URL}`);
-  logger.info(`• Password:             ${PASSWORD ? '*** (hidden)' : 'empty'}`);
-  logger.info(`• Budget Sync ID:       ${BUDGET_SYNC_ID}`);
-  logger.info('==================================================');
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-  try {
-    await ActualApi.init({
+    logger.info(`Initializing Actual API with dataDir=${DATA_DIR}`);
+
+    await api.init({
       dataDir: DATA_DIR,
       serverURL: SERVER_URL,
       password: PASSWORD,
     });
 
-    await ActualApi.downloadBudget(BUDGET_SYNC_ID);
+    await api.downloadBudget(BUDGET_SYNC_ID);
 
-    logger.info(`✅ Connected to Actual Finance and budget loaded`);
-    logger.info('==================================================');
-
-    // Initialize tools (but no test calls)
-    await actualToolsManager.initialize();
-
-  } catch (err: any) {
-    logger.error('❌ Failed to connect to Actual Finance:', err.message || err);
-    logger.error(err); // Full error
-    throw err;
+    initialized = true;
+    logger.info('✅ Connected to Actual Finance and downloaded budget');
+  } catch (err) {
+    initializationError = err instanceof Error ? err : new Error(String(err));
+    logger.error('❌ Failed to connect to Actual Finance:', initializationError);
+    throw initializationError;
+  } finally {
+    initializing = false;
   }
 }
-
-// NO call to main() here!
