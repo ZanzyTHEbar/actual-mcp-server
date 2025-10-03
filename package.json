@@ -1,5 +1,6 @@
 {
-  "name": "librechat-actual-bridge",
+  "name": "actual-mcp-server",
+  "displayName": "Actual MCP Server",
   "version": "0.1.0",
   "description": "A bridge service connecting LibreChat to Actual Finance",
   "main": "dist/index.js",
