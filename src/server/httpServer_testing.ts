@@ -1,5 +1,5 @@
 // src/server/httpServer_testing.ts
-import type { ActualMCPConnection } from '../lib/ActualMCPConnection.js';
+import type { ActualMCPConnection } from '../lib/ActualMCPConnection.ts';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import { zodToJsonSchema } from "zod-to-json-schema";

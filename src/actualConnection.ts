@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import api from '@actual-app/api';
 import logger from './logger.js';
+import config from './config.js';
 
 const DEFAULT_DATA_DIR = path.resolve(os.homedir() || '.', '.actual');
 
@@ -20,23 +21,20 @@ export async function connectToActual() {
   initializing = true;
 
   try {
-    const SERVER_URL = process.env.ACTUAL_SERVER_URL;
-    const PASSWORD = process.env.ACTUAL_PASSWORD;
-    const BUDGET_SYNC_ID = process.env.ACTUAL_BUDGET_SYNC_ID;
-    const BUDGET_PASSWORD = process.env.ACTUAL_BUDGET_PASSWORD; // optional for E2E encrypted budgets
-    const TEST_ACTUAL_CONNECTION = process.argv.includes('--test-actual-connection');
+  const SERVER_URL = config.ACTUAL_SERVER_URL;
+  const PASSWORD = config.ACTUAL_PASSWORD;
+  const BUDGET_SYNC_ID = config.ACTUAL_BUDGET_SYNC_ID;
+  const BUDGET_PASSWORD = process.env.ACTUAL_BUDGET_PASSWORD; // optional for E2E encrypted budgets
+  const TEST_ACTUAL_CONNECTION = process.argv.includes('--test-actual-connection');
 
-    // Use configured MCP_BRIDGE_DATA_DIR (fallback to DEFAULT_DATA_DIR) for all runs
-    const DATA_DIR = process.env.MCP_BRIDGE_DATA_DIR || DEFAULT_DATA_DIR;
+  // Use configured MCP_BRIDGE_DATA_DIR (fallback to DEFAULT_DATA_DIR) for all runs
+  const DATA_DIR = config.MCP_BRIDGE_DATA_DIR || DEFAULT_DATA_DIR;
 
-    if (!SERVER_URL) throw new Error('ACTUAL_SERVER_URL not set');
-    if (!PASSWORD) throw new Error('ACTUAL_PASSWORD not set');
-    if (!BUDGET_SYNC_ID) throw new Error('ACTUAL_BUDGET_SYNC_ID not set');
-    new URL(SERVER_URL);
+  new URL(SERVER_URL);
 
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-    logger.info(`Initializing Actual API with dataDir=${DATA_DIR}`);
+  logger.info(`Initializing Actual API with dataDir=${DATA_DIR}`);
 
     await api.init({
       dataDir: DATA_DIR,
@@ -92,4 +90,23 @@ export async function connectToActual() {
   } finally {
     initializing = false;
   }
+}
+
+export async function shutdownActual() {
+  try {
+    if (typeof (api as any).shutdown === 'function') {
+      await (api as any).shutdown();
+    }
+    initialized = false;
+    logger.info('Actual API shutdown complete.');
+  } catch (err) {
+    logger.error('Error during Actual API shutdown:', err);
+  }
+}
+
+export function getConnectionState() {
+  return {
+    initialized,
+    initializationError,
+  };
 }

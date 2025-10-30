@@ -1,5 +1,5 @@
 // src/server/httpServer.ts
-import type { ActualMCPConnection } from '../lib/ActualMCPConnection.js';
+import type { ActualMCPConnection } from '../lib/ActualMCPConnection.ts';
 import express, { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -11,6 +11,7 @@ import {
 import logger from '../logger.js';
 import { getLocalIp } from '../utils.js';
 import actualToolsManager from '../actualToolsManager.js';
+import { getConnectionState } from '../actualConnection.js';
 
 export async function startHttpServer(
   mcp: ActualMCPConnection,
@@ -211,7 +212,8 @@ export async function startHttpServer(
   });
 
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', transport: 'streamable-http', activeSessions: transports.size });
+    const state = getConnectionState();
+    res.json({ status: state.initialized ? 'ok' : 'not-initialized', ...state, transport: 'streamable-http', activeSessions: transports.size });
   });
 
   const listener = app.listen(port, () => {
