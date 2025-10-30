@@ -1,0 +1,65 @@
+openapi: 3.0.0
+info:
+  title: Actual Finance API (Minimal)
+  version: 0.1.0
+paths:
+  /accounts:
+    get:
+      operationId: accounts_list
+      summary: List all accounts
+      responses:
+        '200':
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Account'
+  /transactions:
+    post:
+      operationId: transactions_create
+      summary: Create a transaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionInput'
+      responses:
+        '200':
+          description: Created transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+components:
+  schemas:
+    Account:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        balance:
+          type: number
+    TransactionInput:
+      type: object
+      properties:
+        accountId:
+          type: string
+        amount:
+          type: number
+        payee:
+          type: string
+        date:
+          type: string
+          format: date
+    Transaction:
+      allOf:
+        - $ref: '#/components/schemas/TransactionInput'
+        - type: object
+          properties:
+            id:
+              type: string

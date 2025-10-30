@@ -48,7 +48,7 @@ export {};
   const [{ connectToActual }, { testAllTools }, { ActualMCPConnection }] = await Promise.all([
     import('./actualConnection.js'),
     import('./tests/actualToolsTests.js'),
-    import('./lib/ActualMCPConnection.js'),
+  import('./lib/ActualMCPConnection.js'),
   ]);
 
   const [
