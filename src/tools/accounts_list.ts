@@ -13,10 +13,8 @@ const tool: ToolDefinition = {
   description: "List all accounts",
   inputSchema: InputSchema,
   call: async (args: any, _meta?: any) => {
-    // validate input
-    const input = InputSchema.parse(args || {});
-    // call adapter.getAccounts (wrap args as appropriate)
-    const result = await adapter.getAccounts(input);
+    // call adapter.getAccounts with no args
+    const result = await adapter.getAccounts();
     return { result };
 
   },

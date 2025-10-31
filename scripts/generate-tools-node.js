@@ -84,9 +84,18 @@ function generateToolFile(opId, op, route, method) {
   const adapterFn = adapterMap[opId];
 
   const adapterImport = adapterFn ? "import adapter from '../lib/actual-adapter.js';\n" : '';
-  const callImplementation = adapterFn
-    ? `    // validate input\n    const input = InputSchema.parse(args || {});\n    // call adapter.${adapterFn} (wrap args as appropriate)\n    const result = await adapter.${adapterFn}(${adapterFn === 'addTransactions' ? '[input]' : 'input'});\n    return { result };\n`
-    : `    InputSchema.parse(args || {});\n    // TODO: implement call to Actual API using generated client/adapters\n    return { result: null };\n`;
+  let callImplementation = '';
+  if (adapterFn) {
+    if (adapterFn === 'getAccounts') {
+      callImplementation = `    // call adapter.getAccounts with no args\n    const result = await adapter.getAccounts();\n    return { result };\n`;
+    } else if (adapterFn === 'addTransactions') {
+      callImplementation = `    // validate input\n    const input = InputSchema.parse(args || {});\n    // call adapter.addTransactions (wrap single transaction into array)\n    const result = await adapter.addTransactions([input]);\n    return { result };\n`;
+    } else {
+      callImplementation = `    // validate input\n    const input = InputSchema.parse(args || {});\n    const result = await adapter.${adapterFn}(input);\n    return { result };\n`;
+    }
+  } else {
+    callImplementation = `    InputSchema.parse(args || {});\n    // TODO: implement call to Actual API using generated client/adapters\n    return { result: null };\n`;
+  }
 
   const code = `import { z } from 'zod';
 import type { paths } from '../../generated/actual-client/types.js';

@@ -15,7 +15,7 @@ const tool: ToolDefinition = {
   call: async (args: any, _meta?: any) => {
     // validate input
     const input = InputSchema.parse(args || {});
-    // call adapter.addTransactions (wrap args as appropriate)
+    // call adapter.addTransactions (wrap single transaction into array)
     const result = await adapter.addTransactions([input]);
     return { result };
 
