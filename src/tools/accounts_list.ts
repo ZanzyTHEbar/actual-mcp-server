@@ -5,16 +5,20 @@ import adapter from '../lib/actual-adapter.js';
 
 const InputSchema = z.object({});
 
+// RESPONSE_TYPE: Account[]
 type Output = any; // refine using generated types (paths['/accounts']['get'])
 
 const tool: ToolDefinition = {
   name: 'actual.accounts.list',
   description: "List all accounts",
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
-    InputSchema.parse(args ?? {});
-    const accounts = await adapter.getAccounts();
-    return { result: accounts };
+  call: async (args: any, _meta?: any) => {
+    // validate input
+    const input = InputSchema.parse(args || {});
+    // call adapter.getAccounts (wrap args as appropriate)
+    const result = await adapter.getAccounts(input);
+    return { result };
+
   },
 };
 

@@ -1,25 +1,20 @@
 import { z } from 'zod';
-import type { paths, components } from '../../generated/actual-client/types.js';
+import type { paths } from '../../generated/actual-client/types.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
-import adapter from '../lib/actual-adapter.js';
 
-const InputSchema = z.object({
-  name: z.string().min(1).describe('Payee name'),
-  notes: z.string().optional(),
-});
+const InputSchema = z.any();
 
 // RESPONSE_TYPE: string
-type Output = string;
+type Output = any; // refine using generated types (paths['/payees']['post'])
 
 const tool: ToolDefinition = {
   name: 'actual.payees.create',
   description: "Create payee",
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
-    const input = InputSchema.parse(args ?? {});
-    const payee = input as { name: string; notes?: string };
-    const res = await adapter.createPayee(payee);
-  return { result: res };
+  call: async (args: any, _meta?: any) => {
+    InputSchema.parse(args || {});
+    // TODO: implement call to Actual API using generated client/adapters
+    return { result: null };
 
   },
 };

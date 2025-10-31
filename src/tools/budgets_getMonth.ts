@@ -1,22 +1,20 @@
 import { z } from 'zod';
-import type { paths, components } from '../../generated/actual-client/types.js';
+import type { paths } from '../../generated/actual-client/types.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
-import adapter from '../lib/actual-adapter.js';
 
 const InputSchema = z.object({ "month": z.string().optional() });
 
-// RESPONSE_TYPE: object
-type Output = components['schemas']['BudgetMonth'];
+// RESPONSE_TYPE: BudgetMonth
+type Output = any; // refine using generated types (paths['/budgets/month']['get'])
 
 const tool: ToolDefinition = {
   name: 'actual.budgets.getMonth',
   description: "Get budget month",
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
-    const input = InputSchema.parse(args ?? {});
-    const month = (input as { month?: string }).month;
-    const res = await adapter.getBudgetMonth(month);
-  return { result: res };
+  call: async (args: any, _meta?: any) => {
+    InputSchema.parse(args || {});
+    // TODO: implement call to Actual API using generated client/adapters
+    return { result: null };
 
   },
 };
