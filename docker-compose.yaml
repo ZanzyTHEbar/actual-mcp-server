@@ -41,6 +41,7 @@ services:
       - ACTUAL_SERVER_URL=${ACTUAL_SERVER_URL:-http://actual-main:5006}
       - ACTUAL_PASSWORD=${ACTUAL_PASSWORD:?ACTUAL_PASSWORD is required}
       - ACTUAL_BUDGET_SYNC_ID=${ACTUAL_BUDGET_SYNC_ID:?ACTUAL_BUDGET_SYNC_ID is required}
+      - ACTUAL_BUDGET_PASSWORD=${ACTUAL_BUDGET_PASSWORD:?ACTUAL_BUDGET_PASSWORD is required}
       
       # MCP Bridge settings
       - MCP_BRIDGE_DATA_DIR=/data
@@ -89,6 +90,7 @@ services:
       # Actual Finance connection
       - ACTUAL_SERVER_URL=${ACTUAL_SERVER_URL:?ACTUAL_SERVER_URL is required}
       - ACTUAL_BUDGET_SYNC_ID=${ACTUAL_BUDGET_SYNC_ID:?ACTUAL_BUDGET_SYNC_ID is required}
+      - ACTUAL_BUDGET_PASSWORD=${ACTUAL_BUDGET_PASSWORD:?ACTUAL_BUDGET_PASSWORD is required}
       
       # Use Docker secret for password
       - ACTUAL_PASSWORD=${ACTUAL_PASSWORD:?ACTUAL_PASSWORD is required}
