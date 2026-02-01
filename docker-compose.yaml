@@ -59,7 +59,7 @@ services:
       # Development settings
       - NODE_ENV=development
     networks:
-      - actual-net
+      - coolify
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
       interval: 30s
@@ -112,7 +112,7 @@ services:
       # Production settings
       - NODE_ENV=production
     networks:
-      - actual-network
+      - coolify
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
       interval: 30s
@@ -153,15 +153,9 @@ services:
 # Networks
 # ----------------------------------------------------------------------------
 networks:
-  actual-network:
-    driver: bridge
-    name: actual-network
-  librechat-net:
+  coolify:
     external: true
-    name: librechat-net
-  actual-net:
-    external: true
-    name: actual-net
+    name: coolify
 
 # ----------------------------------------------------------------------------
 # Volumes
