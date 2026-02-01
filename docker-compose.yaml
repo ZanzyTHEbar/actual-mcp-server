@@ -98,7 +98,7 @@ services:
       - MCP_BRIDGE_PORT=3000
       - MCP_BRIDGE_BIND_HOST=0.0.0.0
       - MCP_BRIDGE_LOG_LEVEL=info
-      - MCP_BRIDGE_STORE_LOGS=true
+      - MCP_BRIDGE_STORE_LOGS=false
       - MCP_BRIDGE_LOG_DIR=/app/logs
       - MCP_BRIDGE_MAX_FILES=30d
       
