@@ -73,7 +73,7 @@ services:
   # Production-ready configuration with secrets management
   
   mcp-server-prod:
-    image: actual-mcp-server:latest
+    image: ghcr.io/agigante80/actual-mcp-server:latest
     container_name: actual-mcp-prod
     profiles:
       - production
@@ -91,7 +91,7 @@ services:
       - ACTUAL_BUDGET_SYNC_ID=${ACTUAL_BUDGET_SYNC_ID:?ACTUAL_BUDGET_SYNC_ID is required}
       
       # Use Docker secret for password
-      - ACTUAL_PASSWORD_FILE=/run/secrets/actual_password
+      - ACTUAL_PASSWORD=${ACTUAL_PASSWORD:?ACTUAL_PASSWORD is required}
       
       # MCP Bridge settings
       - MCP_BRIDGE_DATA_DIR=/data
@@ -111,8 +111,6 @@ services:
       
       # Production settings
       - NODE_ENV=production
-    secrets:
-      - actual_password
     networks:
       - actual-network
     healthcheck:
@@ -179,15 +177,6 @@ volumes:
     driver: local
     name: actual-mcp-logs
 
-# ----------------------------------------------------------------------------
-# Secrets (Production)
-# ----------------------------------------------------------------------------
-# For production, store sensitive data in Docker secrets
-secrets:
-  actual_password:
-    file: ./secrets/actual_password.txt
-    # In Docker Swarm, use:
-    # external: true
 
 # ============================================================================
 # Usage Examples
