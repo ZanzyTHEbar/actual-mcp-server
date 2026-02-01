@@ -25,6 +25,8 @@ services:
     profiles:
       - dev
     restart: unless-stopped
+    user: "0:0"
+    command: ["sh", "-c", "chown -R app:app /data && exec su app -c \"node dist/src/index.js $${MCP_TRANSPORT_MODE:---http}\""]
     ports:
       - "3000:3000"
       - "3600:3600"
@@ -79,6 +81,8 @@ services:
     profiles:
       - production
     restart: unless-stopped
+    user: "0:0"
+    command: ["sh", "-c", "chown -R app:app /data && exec su app -c \"node dist/src/index.js $${MCP_TRANSPORT_MODE:---http}\""]
     ports:
       - "3000:3000"
     volumes:
