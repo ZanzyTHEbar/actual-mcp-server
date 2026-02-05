@@ -1,6 +1,35 @@
 // Add global error handlers
 let isHandlingQueryError = false;
 
+function getUnhandledReasonMessage(reason: unknown): string {
+  if (reason instanceof Error) {
+    return reason.message || String(reason);
+  }
+  if (typeof reason === 'string') {
+    return reason;
+  }
+  if (reason && typeof reason === 'object') {
+    const maybeMessage = (reason as { message?: unknown }).message;
+    if (typeof maybeMessage === 'string') {
+      return maybeMessage;
+    }
+  }
+  return String(reason);
+}
+
+function getUnhandledReasonStack(reason: unknown): string {
+  if (reason instanceof Error && typeof reason.stack === 'string') {
+    return reason.stack;
+  }
+  if (reason && typeof reason === 'object') {
+    const maybeStack = (reason as { stack?: unknown }).stack;
+    if (typeof maybeStack === 'string') {
+      return maybeStack;
+    }
+  }
+  return '';
+}
+
 process.on('unhandledRejection', (reason, promise) => {
   console.error('=== UNHANDLED REJECTION ===');
   console.error('Promise:', promise);
@@ -11,13 +40,33 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('===========================');
   
   // Check if this is a known query error from @actual-app/api
-  const reasonStr = String(reason);
+  const reasonStr = getUnhandledReasonMessage(reason);
+  const reasonStack = getUnhandledReasonStack(reason);
   if (reasonStr.includes('does not exist in table') || 
       reasonStr.includes('Field') && reasonStr.includes('does not exist') ||
       reasonStr.includes('Expression stack')) {
     console.error('⚠️  Known issue: Query field validation error from @actual-app/api');
     console.error('⚠️  Server will continue running. User will see connection error.');
     // Don't crash - this is a known issue with @actual-app/api query validation
+    return;
+  }
+
+  if (reasonStr.includes('No budget file is open')) {
+    console.error('⚠️  Known issue: Actual API budget not open during operation');
+    console.error('⚠️  Server will continue running. User will see a tool error.');
+    return;
+  }
+
+  if (
+    reasonStr.includes('tableName') ||
+    reasonStr.includes('expandStar') ||
+    reasonStr.includes('Cannot read properties of undefined') ||
+    reasonStack.includes('expandStar') ||
+    reasonStack.includes('compileQuery') ||
+    reasonStack.includes('aqlQuery')
+  ) {
+    console.error('⚠️  Known issue: ActualQL query compilation error');
+    console.error('⚠️  Server will continue running. User will see a tool error.');
     return;
   }
   
@@ -148,6 +197,11 @@ export {};
     'Usage guidance:',
     '- Call actual_budgets_getMonth before any summary/query tools to open the budget file.',
     '- Avoid parallel summary/query calls; run them sequentially to prevent session contention.',
+    '',
+    'Safe SQL examples:',
+    '- Recent transactions: SELECT id, date, amount, payee.name FROM transactions ORDER BY date DESC LIMIT 5',
+    '- By account ID: SELECT id, date, amount FROM transactions WHERE account = \'<ACCOUNT_ID>\' AND date >= \'<START_DATE>\' AND date <= \'<END_DATE>\' ORDER BY date DESC LIMIT 50',
+    '- Expenses only: SELECT id, date, amount, category.name FROM transactions WHERE amount < 0 ORDER BY date DESC LIMIT 10',
   ].join('\n');
   const SERVER_INSTRUCTIONS = process.env.MCP_SERVER_INSTRUCTIONS || DEFAULT_SERVER_INSTRUCTIONS;
 

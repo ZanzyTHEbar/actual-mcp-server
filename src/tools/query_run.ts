@@ -28,6 +28,7 @@ IMPORTANT - Field Names:
   • Use payee.name (NOT payee_name) for payee names
   • Use category.name (NOT category_name) for category names
   • Use account.name (NOT account_name) for account names
+  • Use account = '<ACCOUNT_ID>' for account ID filters (NOT account.id)
   • Amounts are in cents: $100.00 = 10000
 
 Available Tables:
@@ -43,6 +44,7 @@ Common Queries:
   • By category: "SELECT id, date, amount, payee.name FROM transactions WHERE category.name = 'Food' LIMIT 10"
   • Expenses: "SELECT id, date, amount, payee.name FROM transactions WHERE amount < 0 ORDER BY date DESC LIMIT 10"
   • Date range: "SELECT * FROM transactions WHERE date >= '2025-01-01' AND date <= '2025-12-31'"
+  • By account ID: "SELECT id, date, amount FROM transactions WHERE account = '<ACCOUNT_ID>' ORDER BY date DESC LIMIT 10"
 
 Alternative Formats:
   • Simple table name: "transactions" (returns all records)

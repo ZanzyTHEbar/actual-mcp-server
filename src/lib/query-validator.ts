@@ -16,7 +16,7 @@ import {
 } from './actual-schema.js';
 
 export interface ValidationError {
-  type: 'invalid_table' | 'invalid_field' | 'invalid_join';
+  type: 'invalid_table' | 'invalid_field' | 'invalid_join' | 'unsupported_feature';
   message: string;
   table?: string;
   field?: string;
@@ -130,6 +130,27 @@ export function validateQuery(sql: string): ValidationResult {
     if (!sql) {
       return { valid: false, errors: [{ type: 'invalid_field', message: 'Empty query' }] };
     }
+
+    const aggregateMatch = sql.match(/\b(sum|count|avg|min|max)\s*\(/i);
+    if (aggregateMatch) {
+      return {
+        valid: false,
+        errors: [{
+          type: 'unsupported_feature',
+          message: `SQL aggregate functions (${aggregateMatch[1].toUpperCase()}) are not supported. Use summary tools like actual_transactions_summary_by_category/payee.`,
+        }],
+      };
+    }
+
+    if (/\bGROUP\s+BY\b/i.test(sql)) {
+      return {
+        valid: false,
+        errors: [{
+          type: 'unsupported_feature',
+          message: 'SQL GROUP BY is not supported. Use summary tools like actual_transactions_summary_by_category/payee.',
+        }],
+      };
+    }
     
     // Extract tables
     const tables = extractTableNames(sql);
@@ -161,6 +182,17 @@ export function validateQuery(sql: string): ValidationResult {
     for (const { field, table } of selectFields) {
       if (field === '*') continue; // SELECT * is always valid
       
+      if (table === 'account' && field === 'id') {
+        errors.push({
+          type: 'invalid_field',
+          message: 'Use "account" for the account ID (e.g., WHERE account = "<ACCOUNT_ID>"), not "account.id".',
+          table: 'transactions',
+          field: 'account',
+          suggestions: ['account'],
+        });
+        continue;
+      }
+
       // Check for join paths (e.g., payee.name)
       const fullPath = table ? `${table}.${field}` : field;
       if (table && field) {
@@ -201,6 +233,17 @@ export function validateQuery(sql: string): ValidationResult {
     for (const { field, table } of whereFields) {
       const fullPath = table ? `${table}.${field}` : field;
       
+      if (table === 'account' && field === 'id') {
+        errors.push({
+          type: 'invalid_field',
+          message: 'Use "account" for the account ID (e.g., WHERE account = "<ACCOUNT_ID>"), not "account.id".',
+          table: 'transactions',
+          field: 'account',
+          suggestions: ['account'],
+        });
+        continue;
+      }
+
       // Check for join paths
       if (table && field && isValidJoinPath(fullPath)) {
         continue;

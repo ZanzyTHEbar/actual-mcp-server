@@ -663,6 +663,7 @@ export async function runQuery(queryString: string | any): Promise<unknown> {
           const msg = err?.message || String(err);
           if (msg.includes('No budget file is open')) {
             logger.warn('[ADAPTER] Budget not open; re-initializing and retrying query');
+            await shutdownActualApi();
             await initActualApiForOperation();
             return await rawRunQuery(queryObj) as Promise<unknown>;
           }
