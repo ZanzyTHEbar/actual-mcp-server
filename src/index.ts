@@ -70,8 +70,13 @@ process.on('unhandledRejection', (reason, promise) => {
     return;
   }
   
-  // For all other unhandled rejections, exit
-  process.exit(1);
+  // For all other unhandled rejections, prefer to keep the server alive
+  // unless explicitly configured to exit.
+  if (process.env.MCP_EXIT_ON_UNHANDLED_REJECTION === 'true') {
+    process.exit(1);
+  }
+  console.error('⚠️  Unhandled rejection suppressed; server continues running.');
+  return;
 });
 
 process.on('uncaughtException', (error) => {
