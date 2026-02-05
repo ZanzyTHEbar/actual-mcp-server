@@ -25,7 +25,7 @@ type Output = {
 
 const tool: ToolDefinition = {
   name: 'actual_transactions_summary_by_category',
-  description: 'Get spending summary grouped by category using ActualQL aggregation. Returns total amount and transaction count per category for a date range. Perfect for budget analysis and expense tracking. By default excludes income categories (set includeIncome=true to include them).',
+  description: 'Get spending summary grouped by category using ActualQL aggregation. Returns total amount and transaction count per category for a date range. Perfect for budget analysis and expense tracking. By default excludes income categories (set includeIncome=true to include them). Usage note: call actual_budgets_getMonth first to open the budget and avoid parallel summary/query calls.',
   inputSchema: InputSchema,
   call: async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});

@@ -14,6 +14,8 @@ const tool: ToolDefinition = {
 
 **RECOMMENDED: Use SQL syntax** - Most reliable and well-tested format.
 
+Usage note: call actual_budgets_getMonth first to open the budget and avoid parallel summary/query calls.
+
 SQL SYNTAX (Preferred):
   SELECT [fields] FROM [table] WHERE [conditions] ORDER BY [field] DESC LIMIT [n]
   

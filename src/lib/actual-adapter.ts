@@ -656,6 +656,20 @@ export async function runQuery(queryString: string | any): Promise<unknown> {
     return await withActualApi(async () => {
       observability.incrementToolCall('actual.query.run').catch(() => {});
       
+      const executeQueryWithRetry = async (queryObj: unknown) => {
+        try {
+          return await rawRunQuery(queryObj) as Promise<unknown>;
+        } catch (err: any) {
+          const msg = err?.message || String(err);
+          if (msg.includes('No budget file is open')) {
+            logger.warn('[ADAPTER] Budget not open; re-initializing and retrying query');
+            await initActualApiForOperation();
+            return await rawRunQuery(queryObj) as Promise<unknown>;
+          }
+          throw err;
+        }
+      };
+
       try {
         // Import validation utilities
         const { validateQuery, formatValidationErrors } = await import('./query-validator.js');
@@ -674,7 +688,7 @@ export async function runQuery(queryString: string | any): Promise<unknown> {
         try {
           return await withConcurrency(async () => {
             try {
-              return await rawRunQuery(queryString) as Promise<unknown>;
+              return await executeQueryWithRetry(queryString);
             } catch (err: any) {
               // Catch errors from the query execution to prevent unhandled rejections
               const msg = err?.message || String(err);
@@ -786,7 +800,7 @@ export async function runQuery(queryString: string | any): Promise<unknown> {
     try {
       return await withConcurrency(async () => {
         try {
-          return await rawRunQuery(query) as Promise<unknown>;
+          return await executeQueryWithRetry(query);
         } catch (err: any) {
           // Catch errors from the query execution to prevent unhandled rejections
           const msg = err?.message || String(err);

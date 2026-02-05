@@ -76,7 +76,10 @@ services:
   # Production-ready configuration with secrets management
   
   mcp-server-prod:
-    image: ghcr.io/agigante80/actual-mcp-server:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: actual-mcp-server:latest
     container_name: actual-mcp-prod
     profiles:
       - production

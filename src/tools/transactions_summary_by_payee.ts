@@ -24,7 +24,7 @@ type Output = {
 
 const tool: ToolDefinition = {
   name: 'actual_transactions_summary_by_payee',
-  description: 'Get spending summary grouped by payee using ActualQL aggregation. Returns total amount and transaction count per payee for a date range. Useful for identifying top vendors and analyzing merchant spending patterns. Results are ordered by total amount (highest first).',
+  description: 'Get spending summary grouped by payee using ActualQL aggregation. Returns total amount and transaction count per payee for a date range. Useful for identifying top vendors and analyzing merchant spending patterns. Results are ordered by total amount (highest first). Usage note: call actual_budgets_getMonth first to open the budget and avoid parallel summary/query calls.',
   inputSchema: InputSchema,
   call: async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
