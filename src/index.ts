@@ -141,9 +141,15 @@ export {};
   const useTestMcpClient = args.includes('--test-mcp-client');
 
   const SERVER_DESCRIPTION = 'Bridge MCP server exposing Actual finance API to LibreChat.';
-  const SERVER_INSTRUCTIONS =
-    'Welcome to the Actual MCP server. The tools listed here are only the ones currently confirmed and tested, ' +
-    'but the server can proxy any API call supported by Actual. As we expand coverage, more tools will be officially exposed.';
+  const DEFAULT_SERVER_INSTRUCTIONS = [
+    'Welcome to the Actual MCP server. The tools listed here are only the ones currently confirmed and tested,',
+    'but the server can proxy any API call supported by Actual. As we expand coverage, more tools will be officially exposed.',
+    '',
+    'Usage guidance:',
+    '- Call actual_budgets_getMonth before any summary/query tools to open the budget file.',
+    '- Avoid parallel summary/query calls; run them sequentially to prevent session contention.',
+  ].join('\n');
+  const SERVER_INSTRUCTIONS = process.env.MCP_SERVER_INSTRUCTIONS || DEFAULT_SERVER_INSTRUCTIONS;
 
   const usage = usageEarly;
 

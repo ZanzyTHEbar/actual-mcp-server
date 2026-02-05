@@ -80,6 +80,13 @@ export class ActualMCPConnection extends EventEmitter {
         },
       ];
     }
+    const defaultServerInstructions = [
+      'This server exposes Actual Finance tools via MCP.',
+      'You must provide ACTUAL_SERVER_URL, ACTUAL_PASSWORD, and ACTUAL_BUDGET_SYNC_ID as environment variables.',
+      'Usage: call actual_budgets_getMonth before summary/query tools, and avoid parallel summary calls.',
+    ].join('\n');
+    const serverInstructions = process.env.MCP_SERVER_INSTRUCTIONS || defaultServerInstructions;
+
     return {
       tools: {
         listChanged: true,
@@ -89,7 +96,7 @@ export class ActualMCPConnection extends EventEmitter {
       prompts: false,
       models: false,
       logging: false,
-      serverInstructions: 'This server exposes Actual Finance tools via MCP. You must provide ACTUAL_SERVER_URL, ACTUAL_PASSWORD, and ACTUAL_BUDGET_SYNC_ID as environment variables.'
+      serverInstructions
     };
   }
 
