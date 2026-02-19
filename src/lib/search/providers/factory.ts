@@ -70,15 +70,34 @@ function buildProvider(cfg: EmbeddingProviderConfig): EmbeddingProvider {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Singleton management
+// ---------------------------------------------------------------------------
+
+let _singleton: EmbeddingProvider | null = null;
+let _singletonInit: Promise<EmbeddingProvider | null> | null = null;
+
 /**
- * Create and initialise an embedding provider based on config.
+ * Get or create the singleton embedding provider.
  *
  * Fallback chain:
  *   1. Configured provider (from EMBEDDING_PROVIDER env var)
  *   2. HuggingFace local (if configured provider isn't 'local' and failed)
  *   3. null (all providers failed — search will operate in FTS-only mode)
+ *
+ * The result is cached: subsequent calls return the same instance.
  */
 export async function createEmbeddingProvider(): Promise<EmbeddingProvider | null> {
+  if (_singleton) return _singleton;
+  if (_singletonInit) return _singletonInit;
+
+  _singletonInit = initProvider();
+  _singleton = await _singletonInit;
+  _singletonInit = null;
+  return _singleton;
+}
+
+async function initProvider(): Promise<EmbeddingProvider | null> {
   const cfg = getProviderConfig();
   logger.info(`[EmbeddingFactory] Creating provider: ${cfg.provider}`);
 
@@ -98,9 +117,10 @@ export async function createEmbeddingProvider(): Promise<EmbeddingProvider | nul
       `[EmbeddingFactory] Primary provider "${cfg.provider}" failed. ` +
       `Falling back to HuggingFace local.`,
     );
+    // Use the expected dimensions from the local model, not from the failed primary
     const fallback = new HuggingFaceLocalProvider({
       model: cfg.hfModel,
-      dimensions: cfg.dimensions ?? 384,
+      dimensions: 384, // all-MiniLM-L6-v2 always produces 384-dim
       quantized: cfg.hfQuantized,
     });
     const fallbackOk = await fallback.init();
@@ -112,6 +132,20 @@ export async function createEmbeddingProvider(): Promise<EmbeddingProvider | nul
 
   logger.warn('[EmbeddingFactory] All providers failed. Vector search will be unavailable.');
   return null;
+}
+
+/**
+ * Get the current singleton (or null if not yet initialized).
+ * Does NOT trigger initialization — use createEmbeddingProvider() for that.
+ */
+export function getEmbeddingProvider(): EmbeddingProvider | null {
+  return _singleton;
+}
+
+/** Reset singleton (for testing only). */
+export function _resetProviderSingleton(): void {
+  _singleton = null;
+  _singletonInit = null;
 }
 
 /** Expose provider classes for direct instantiation in tests. */
