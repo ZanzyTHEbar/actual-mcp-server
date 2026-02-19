@@ -37,10 +37,11 @@ export interface EmbeddingPipelineOptions {
 // Pipeline singleton
 // ---------------------------------------------------------------------------
 
-// We use `any` for the pipeline type because @huggingface/transformers
-// uses complex generic types that differ across versions.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _pipeline: any = null;
+interface FeatureExtractionPipeline {
+  (input: string | string[], opts?: { pooling?: string; normalize?: boolean }): Promise<{ data: Float32Array }>;
+}
+
+let _pipeline: FeatureExtractionPipeline | null = null;
 let _loading: Promise<void> | null = null;
 let _modelId: string = DEFAULT_MODEL;
 let _dimensions: number = DEFAULT_DIMENSIONS;
@@ -76,7 +77,7 @@ async function ensureLoaded(opts?: EmbeddingPipelineOptions): Promise<boolean> {
 
       _pipeline = await pipeline('feature-extraction', _modelId, {
         dtype: quantized ? 'q8' : 'fp32',
-      });
+      }) as unknown as FeatureExtractionPipeline;
 
       logger.info(
         `[Embedding] Model ready in ${Date.now() - startMs}ms (dims=${_dimensions})`,
@@ -111,13 +112,12 @@ export async function embed(
   const loaded = await ensureLoaded(opts);
   if (!loaded) return null;
 
-  const output = await _pipeline(text, {
+  const output = await _pipeline!(text, {
     pooling: 'mean',
     normalize: true,
   });
 
-  // output.data is a Float32Array-like (Tensor).  Convert to plain array.
-  const arr: number[] = Array.from(output.data as Float32Array);
+  const arr: number[] = Array.from(output.data);
 
   // Sanity-check dimensions
   if (arr.length !== _dimensions) {

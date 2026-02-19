@@ -97,6 +97,15 @@ for (const group of SYNONYM_GROUPS) {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Terms with spaces or hyphens need quoting for FTS5 (hyphen = column prefix). */
+function needsQuoting(term: string): boolean {
+  return term.includes(' ') || term.includes('-');
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -124,10 +133,11 @@ export function expandQuery(query: string): string {
     const bigram = `${words[i]} ${words[i + 1]}`;
     const syns = termToSynonyms.get(bigram);
     if (syns && syns.size > 1) {
+      const quotedBigram = `"${bigram}"`;
       const alternatives = [...syns]
         .filter((s) => s !== bigram)
-        .map((s) => (s.includes(' ') ? `"${s}"` : s));
-      expandedParts.push(`(${bigram} OR ${alternatives.join(' OR ')})`);
+        .map((s) => needsQuoting(s) ? `"${s}"` : s);
+      expandedParts.push(`(${quotedBigram} OR ${alternatives.join(' OR ')})`);
       used.add(i);
       used.add(i + 1);
     }
@@ -141,8 +151,9 @@ export function expandQuery(query: string): string {
     if (syns && syns.size > 1) {
       const alternatives = [...syns]
         .filter((s) => s !== word)
-        .map((s) => (s.includes(' ') ? `"${s}"` : s));
-      expandedParts.push(`(${word} OR ${alternatives.join(' OR ')})`);
+        .map((s) => needsQuoting(s) ? `"${s}"` : s);
+      const quotedWord = needsQuoting(word) ? `"${word}"` : word;
+      expandedParts.push(`(${quotedWord} OR ${alternatives.join(' OR ')})`);
     } else {
       expandedParts.push(word);
     }

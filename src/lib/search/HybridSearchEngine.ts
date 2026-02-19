@@ -7,21 +7,24 @@
  * auditable, and fast.
  */
 
-import type DatabaseConstructor from 'libsql';
-import { embed } from './EmbeddingPipeline.js';
 import { getResponseCache } from './ResponseCache.js';
 import { expandQuery } from './queryExpansion.js';
-import { analyzeQuery } from './queryAnalyzer.js';
+import { analyzeQuery, stripExtractedPatterns } from './queryAnalyzer.js';
+import { recordSearchQuery } from '../../observability.js';
 import logger from '../../logger.js';
 import type {
+  DatabaseInstance,
   HybridSearchQuery,
   SearchResponse,
   SearchResult,
   IndexedTransaction,
+  TransactionRow,
+  FTSResultRow,
+  VecResultRow,
+  HybridResultRow,
+  SearchResultRow,
 } from './types.js';
 
-/** Instance type of a libsql Database (compatible with better-sqlite3). */
-type DatabaseInstance = InstanceType<typeof DatabaseConstructor>;
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -43,7 +46,7 @@ export class HybridSearchEngine {
     private getDb: () => DatabaseInstance,
     embedFn?: (text: string) => Promise<number[] | null>,
   ) {
-    this.embedFn = embedFn ?? embed;
+    this.embedFn = embedFn ?? (async () => null);
   }
 
   /**
@@ -71,6 +74,29 @@ export class HybridSearchEngine {
     const mode = query.mode ?? analysis.recommendedMode ?? 'hybrid';
     const wFts = query.weightFts ?? analysis.ftsWeight ?? DEFAULT_WEIGHT_FTS;
     const wVec = query.weightVec ?? analysis.vecWeight ?? DEFAULT_WEIGHT_VEC;
+
+    // Wire analyzer-extracted amounts into effective filters when the user
+    // didn't provide explicit amount filters. Actual stores expenses as
+    // negative cents, so "over $50" means amount <= -5000.
+    const effectiveFilters = { ...query.filters };
+    const userSetAmounts = effectiveFilters.minAmount !== undefined || effectiveFilters.maxAmount !== undefined;
+    if (analysis.extractedAmounts && !userSetAmounts) {
+      const { min, max } = analysis.extractedAmounts;
+      if (min !== undefined && max !== undefined) {
+        // "between $20 and $100" → -10000 <= amount <= -2000
+        effectiveFilters.minAmount = -max;
+        effectiveFilters.maxAmount = -min;
+        logger.debug(`[HybridSearch] Applied extracted amount range: [${effectiveFilters.minAmount}, ${effectiveFilters.maxAmount}]`);
+      } else if (min !== undefined) {
+        // "over $50" → amount <= -5000 (expenses more negative = larger spend)
+        effectiveFilters.maxAmount = -min;
+        logger.debug(`[HybridSearch] Applied extracted min amount: maxAmount=${effectiveFilters.maxAmount}`);
+      } else if (max !== undefined) {
+        // "under $50" → amount >= -5000
+        effectiveFilters.minAmount = -max;
+        logger.debug(`[HybridSearch] Applied extracted max amount: minAmount=${effectiveFilters.minAmount}`);
+      }
+    }
 
     if (analysis.recommendedMode && !query.mode) {
       logger.debug(
@@ -100,35 +126,33 @@ export class HybridSearchEngine {
       timing.embeddingMs = Date.now() - embStart;
     }
 
-    // Expand FTS query with financial domain synonyms for better recall
-    // Original text → embeddings (semantics), expanded text → FTS5 (keywords)
-    const ftsText = query.text ? expandQuery(query.text) : '';
-    if (query.text && ftsText !== query.text) {
-      logger.debug(`[HybridSearch] Query expanded: "${query.text}" → "${ftsText}"`);
+    // Pipeline: raw user text → sanitize → strip extracted filter patterns → expand
+    // sanitize: removes dangerous FTS5 chars from raw user input
+    // strip: removes amount/date fragments already extracted into effectiveFilters
+    // expand: adds trusted synonym OR-groups (output goes straight to FTS5)
+    const sanitized = query.text ? this.sanitizeUserInput(query.text) : '';
+    const stripped = sanitized ? stripExtractedPatterns(sanitized) : '';
+    const ftsText = stripped ? expandQuery(stripped) : '';
+    if (query.text && ftsText !== stripped) {
+      logger.debug(`[HybridSearch] FTS pipeline: "${query.text}" → sanitize:"${sanitized}" → strip:"${stripped}" → expand:"${ftsText}"`);
     }
 
     // Build and execute the appropriate query
-    let results: SearchResult[];
+    let results: SearchResult[] = await this.executeMode(db, mode, ftsText, embeddingJson, effectiveFilters, limit, wFts, wVec);
 
-    switch (mode) {
-      case 'fulltext':
-        results = this.executeFulltext(db, ftsText, query.filters, limit);
-        break;
-      case 'vector':
-        results = embeddingJson
-          ? this.executeVector(db, embeddingJson, query.filters, limit)
-          : [];
-        break;
-      case 'metadata':
-        results = this.executeMetadata(db, query.filters, limit);
-        break;
-      case 'hybrid':
-      default:
-        results = await this.executeHybrid(db, ftsText, embeddingJson, query.filters, limit, wFts, wVec);
-        break;
+    // Post-filter recall: if auto-derived amount filters produced zero results
+    // but we had query text, retry without them. Only relax auto-derived filters,
+    // never user-explicit ones.
+    const autoFiltersApplied = analysis.extractedAmounts && !userSetAmounts
+      && (effectiveFilters.minAmount !== undefined || effectiveFilters.maxAmount !== undefined);
+    if (results.length === 0 && autoFiltersApplied && ftsText) {
+      const relaxed = { ...query.filters };
+      logger.debug('[HybridSearch] Zero results with auto-derived amount filters — retrying without');
+      results = await this.executeMode(db, mode, ftsText, embeddingJson, relaxed, limit, wFts, wVec);
     }
 
     timing.totalMs = Date.now() - totalStart;
+    recordSearchQuery(mode, analysis.intent, timing.totalMs).catch(() => { });
 
     const response: SearchResponse = {
       results,
@@ -154,6 +178,31 @@ export class HybridSearchEngine {
   // Query executors
   // -------------------------------------------------------------------------
 
+  private async executeMode(
+    db: DatabaseInstance,
+    mode: string,
+    ftsText: string,
+    embeddingJson: string | null,
+    filters: HybridSearchQuery['filters'],
+    limit: number,
+    wFts: number,
+    wVec: number,
+  ): Promise<SearchResult[]> {
+    switch (mode) {
+      case 'fulltext':
+        return this.executeFulltext(db, ftsText, filters, limit);
+      case 'vector':
+        return embeddingJson
+          ? this.executeVector(db, embeddingJson, filters, limit)
+          : [];
+      case 'metadata':
+        return this.executeMetadata(db, filters, limit);
+      case 'hybrid':
+      default:
+        return this.executeHybrid(db, ftsText, embeddingJson, filters, limit, wFts, wVec);
+    }
+  }
+
   private executeFulltext(
     db: DatabaseInstance,
     text: string,
@@ -164,7 +213,7 @@ export class HybridSearchEngine {
 
     const { where, params } = this.buildMetadataWhere(filters);
 
-    const ftsQuery = this.sanitizeFtsQuery(text);
+    const ftsQuery = this.prepareFtsQuery(text);
     const stmt = db.prepare(`
       WITH fts_matches AS (
         SELECT txn_id, rank, row_number() OVER (ORDER BY rank) AS rank_num
@@ -181,7 +230,7 @@ export class HybridSearchEngine {
       LIMIT ?
     `);
 
-    const rows = stmt.all(ftsQuery, limit * 2, ...Object.values(params), limit) as any[];
+    const rows = stmt.all(ftsQuery, limit * 2, ...Object.values(params), limit) as FTSResultRow[];
     return rows.map((r) => this.rowToResult(r, ['fts']));
   }
 
@@ -194,16 +243,19 @@ export class HybridSearchEngine {
     const { where, params } = this.buildMetadataWhere(filters);
 
     const stmt = db.prepare(`
-      SELECT t.*,
-             vector_distance_cos(t.embedding, vector(?)) AS vec_dist,
-             row_number() OVER (ORDER BY vector_distance_cos(t.embedding, vector(?))) AS rank_num
-      FROM transactions t
-      ${where ? `WHERE ${where}` : ''}
+      WITH scored AS (
+        SELECT t.*, vector_distance_cos(t.embedding, vector32(?)) AS vec_dist
+        FROM transactions t
+        WHERE t.embedding IS NOT NULL
+        ${where ? `AND ${where}` : ''}
+      )
+      SELECT *, row_number() OVER (ORDER BY vec_dist) AS rank_num
+      FROM scored
       ORDER BY vec_dist
       LIMIT ?
     `);
 
-    const rows = stmt.all(embeddingJson, embeddingJson, ...Object.values(params), limit) as any[];
+    const rows = stmt.all(embeddingJson, ...Object.values(params), limit) as VecResultRow[];
     return rows.map((r) => this.rowToResult(r, ['vector']));
   }
 
@@ -216,7 +268,7 @@ export class HybridSearchEngine {
     if (!where) {
       // No filters — return most recent
       const rows = db.prepare('SELECT * FROM transactions t ORDER BY t.date DESC LIMIT ?')
-        .all(limit) as any[];
+        .all(limit) as TransactionRow[];
       return rows.map((r) => this.rowToResult(r, ['metadata']));
     }
 
@@ -226,7 +278,7 @@ export class HybridSearchEngine {
       ORDER BY t.date DESC
       LIMIT ?
     `);
-    const rows = stmt.all(...Object.values(params), limit) as any[];
+    const rows = stmt.all(...Object.values(params), limit) as TransactionRow[];
     return rows.map((r) => this.rowToResult(r, ['metadata']));
   }
 
@@ -244,7 +296,7 @@ export class HybridSearchEngine {
       return this.executeMetadata(db, filters, limit);
     }
 
-    const ftsQuery = this.sanitizeFtsQuery(text);
+    const ftsQuery = this.prepareFtsQuery(text);
     const { where, params } = this.buildMetadataWhere(filters);
 
     // If we don't have an embedding, fall back to FTS-only
@@ -253,9 +305,10 @@ export class HybridSearchEngine {
     }
 
     // Full hybrid: FTS5 + Vector + RRF
+    // vec_matches uses a CTE to compute vector_distance_cos once, then
+    // ranks by that pre-computed distance — avoids duplicate function calls.
     const sql = `
       WITH
-      -- FTS5 BM25 matches (self-contained FTS5 with txn_id)
       fts_matches AS (
         SELECT txn_id,
                row_number() OVER (ORDER BY rank) AS rank_num
@@ -263,16 +316,18 @@ export class HybridSearchEngine {
         WHERE fts_transactions MATCH ?
         LIMIT ?
       ),
-      -- Brute-force vector matches (cosine distance)
-      vec_matches AS (
+      vec_scored AS (
         SELECT id AS txn_id,
-               row_number() OVER (ORDER BY vector_distance_cos(embedding, vector(?))) AS rank_num
+               vector_distance_cos(embedding, vector32(?)) AS dist
         FROM transactions
         WHERE embedding IS NOT NULL
-        ORDER BY vector_distance_cos(embedding, vector(?))
+      ),
+      vec_matches AS (
+        SELECT txn_id, row_number() OVER (ORDER BY dist) AS rank_num
+        FROM vec_scored
+        ORDER BY dist
         LIMIT ?
       ),
-      -- Reciprocal Rank Fusion
       fused AS (
         SELECT
           COALESCE(f.txn_id, v.txn_id) AS txn_id,
@@ -283,11 +338,7 @@ export class HybridSearchEngine {
         FROM fts_matches f
         FULL OUTER JOIN vec_matches v ON f.txn_id = v.txn_id
       )
-      SELECT
-        fused.rrf_score,
-        fused.fts_rank,
-        fused.vec_rank,
-        t.*
+      SELECT fused.rrf_score, fused.fts_rank, fused.vec_rank, t.*
       FROM fused
       JOIN transactions t ON t.id = fused.txn_id
       ${where ? `WHERE ${where}` : ''}
@@ -295,12 +346,12 @@ export class HybridSearchEngine {
       LIMIT ?
     `;
 
-    const k = limit * 2; // Fetch more candidates for fusion
-    // Parameters: FTS MATCH, FTS limit, vec embed×2 (WHERE + ORDER BY), vec limit, RRF weights, metadata filters, final limit
-    const allParams = [ftsQuery, k, embeddingJson, embeddingJson, k, wFts, wVec, ...Object.values(params), limit];
+    const k = limit * 2;
+    // Parameters: FTS MATCH, FTS limit, vec embed (single), vec limit, RRF weights, metadata filters, final limit
+    const allParams = [ftsQuery, k, embeddingJson, k, wFts, wVec, ...Object.values(params), limit];
 
     try {
-      const rows = db.prepare(sql).all(...allParams) as any[];
+      const rows = db.prepare(sql).all(...allParams) as HybridResultRow[];
       return rows.map((r) => {
         const matchedBy: ('fts' | 'vector' | 'metadata')[] = [];
         if (r.fts_rank != null) matchedBy.push('fts');
@@ -369,29 +420,62 @@ export class HybridSearchEngine {
     };
   }
 
-  /** Sanitize user input for FTS5 MATCH syntax. */
-  private sanitizeFtsQuery(text: string): string {
-    // FTS5 special chars: * " ( ) OR AND NOT NEAR
-    // Escape by quoting the entire string, or strip specials
+  /**
+   * Sanitize raw user input — strip chars that are dangerous in FTS5 MATCH
+   * but preserve words intact. Called BEFORE expandQuery so the expansion
+   * can safely produce OR / parens / quotes.
+   */
+  private sanitizeUserInput(text: string): string {
     const cleaned = text
-      .replace(/['"(){}[\]\\^~!@#$%&]/g, ' ')
+      .replace(/['"{}[\]\\^~!@#$%&]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
-
-    if (!cleaned) return '""';
-
-    // Split into words and join with implicit AND (FTS5 default)
-    const words = cleaned.split(' ').filter(Boolean);
-    // Use prefix matching for the last word to support partial typing
-    if (words.length > 0) {
-      words[words.length - 1] = words[words.length - 1] + '*';
-    }
-    return words.join(' ');
+    return cleaned || '';
   }
 
-  /** Map a raw DB row to a SearchResult. */
+  /**
+   * Prepare expanded text for FTS5 MATCH. The input is already trusted
+   * (produced by expandQuery), so OR / parens / quotes are preserved.
+   * Inserts explicit AND between adjacent tokens for libsql FTS5 compat
+   * (libsql requires explicit AND after closing parens).
+   * Adds prefix wildcard to the last bare word for partial-typing support.
+   */
+  private prepareFtsQuery(text: string): string {
+    if (!text.trim()) return '""';
+
+    // Tokenize into segments: parenthesized groups, quoted phrases, bare words, OR keyword
+    const tokens: string[] = [];
+    const re = /(\([^)]*\))|("(?:[^"\\]|\\.)*")|(\bOR\b)|([\w*]+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      tokens.push(m[0]);
+    }
+
+    if (tokens.length === 0) return '""';
+
+    // Join tokens with AND where needed: between adjacent non-OR tokens
+    const parts: string[] = [tokens[0]];
+    for (let i = 1; i < tokens.length; i++) {
+      const prev = tokens[i - 1];
+      const cur = tokens[i];
+      if (prev === 'OR' || cur === 'OR') {
+        parts.push(cur);
+      } else {
+        parts.push('AND', cur);
+      }
+    }
+
+    let result = parts.join(' ');
+
+    // Add prefix matching to the last bare word (not inside quotes/parens)
+    result = result.replace(/([\w]+)(\s*)$/, '$1*$2').trim();
+
+    return result;
+  }
+
+  /** Map a raw DB row to a SearchResult. Accepts any row variant. */
   private rowToResult(
-    row: any,
+    row: SearchResultRow,
     matchedBy: ('fts' | 'vector' | 'metadata')[],
   ): SearchResult {
     const transaction: IndexedTransaction = {
@@ -413,7 +497,7 @@ export class HybridSearchEngine {
       transaction,
       score: row.rrf_score ?? row.rank_num ?? 0,
       ftsRank: row.fts_rank ?? undefined,
-      vecDistance: row.vec_rank ?? undefined,
+      vecDistance: row.vec_dist ?? undefined,
       matchedBy,
     };
   }

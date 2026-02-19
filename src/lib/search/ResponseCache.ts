@@ -1,10 +1,13 @@
 /**
- * ResponseCache — in-memory TTL cache with tag-based invalidation and
- * stale-while-revalidate (SWR) support.
+ * ResponseCache — in-memory TTL cache with tag-based invalidation.
  *
  * Built on top of `lru-cache` v11.  Each cached entry is associated with one
  * or more `CacheTag`s so that write operations can surgically invalidate
  * related entries without flushing the entire cache.
+ *
+ * Stale reads: `allowStale: true` means expired entries are returned
+ * immediately while a background re-fetch can be triggered by the caller.
+ * There is no automatic revalidation — callers must re-invoke `getOrFetch`.
  *
  * Usage:
  *   const cache = new ResponseCache();
@@ -26,8 +29,7 @@ import logger from '../../logger.js';
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_ENTRIES = 512;
-const DEFAULT_TTL_MS = 5 * 60_000; // 5 minutes
-const DEFAULT_STALE_MS = 2 * 60_000; // Allow stale for 2 min while revalidating
+const DEFAULT_TTL_MS = parseInt(process.env.CACHE_DEFAULT_TTL_MS ?? '300000', 10); // 5 min default
 
 // ---------------------------------------------------------------------------
 // Internal metadata kept alongside each cached value
@@ -42,24 +44,21 @@ interface CacheMeta {
 // ---------------------------------------------------------------------------
 
 export class ResponseCache {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private cache: LRUCache<string, any>;
+  /* eslint-disable @typescript-eslint/no-empty-object-type -- LRUCache V must extend {} */
+  private cache: LRUCache<string, {}>;
   private meta: Map<string, CacheMeta> = new Map();
-  /** Tracks in-flight fetchers so concurrent callers coalesce. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private inflight: Map<string, Promise<any>> = new Map();
-  /** Monotonically increasing version; bumped on any invalidation. */
+  private inflight: Map<string, Promise<{}>> = new Map();
   private _version = 0;
 
   constructor(opts?: { maxEntries?: number }) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    this.cache = new LRUCache<string, any>({
+    this.cache = new LRUCache<string, {}>({
       max: opts?.maxEntries ?? DEFAULT_MAX_ENTRIES,
-      // TTL is set per-entry via the `set` options, but we need a global
-      // default so the LRU knows to track TTL at all.
       ttl: DEFAULT_TTL_MS,
-      // Allow reading stale entries while the fetcher is running.
       allowStale: true,
+      // Clean up the meta Map when entries are evicted (prevents memory leak)
+      dispose: (_value, key) => {
+        this.meta.delete(key);
+      },
     });
   }
 
@@ -74,9 +73,8 @@ export class ResponseCache {
 
   /**
    * Get a value from cache, or fetch it if missing / expired.
-   *
-   * If the entry is stale but within the SWR window, the stale value is
-   * returned immediately and a background re-fetch is kicked off.
+   * Returns stale values immediately while re-fetching in the background
+   * only if the entry exists but is past its TTL.
    */
   async getOrFetch<T>(
     key: string,
@@ -94,7 +92,7 @@ export class ResponseCache {
     }
 
     const promise = this.fetchAndStore<T>(key, opts);
-    this.inflight.set(key, promise);
+    this.inflight.set(key, promise as Promise<{}>);
 
     try {
       return await promise;
@@ -110,7 +108,7 @@ export class ResponseCache {
 
   /** Manually set a value (e.g. after a write that produces a known result). */
   set<T>(key: string, value: T, opts: CacheEntryOptions): void {
-    this.cache.set(key, value, {
+    this.cache.set(key, value as {}, {
       ttl: opts.ttlMs,
     });
     this.meta.set(key, { tags: new Set(opts.tags) });
@@ -178,7 +176,7 @@ export class ResponseCache {
     opts: CacheEntryOptions & { fetcher: () => Promise<T> },
   ): Promise<T> {
     const value = await opts.fetcher();
-    this.cache.set(key, value, {
+    this.cache.set(key, value as {}, {
       ttl: opts.ttlMs,
     });
     this.meta.set(key, { tags: new Set(opts.tags) });

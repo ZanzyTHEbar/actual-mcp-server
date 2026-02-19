@@ -13,7 +13,11 @@ import fs from 'fs';
 import crypto from 'crypto';
 import logger from '../../logger.js';
 import { embed as defaultEmbed, buildTransactionText as defaultBuildText, getModelInfo as defaultModelInfo } from './EmbeddingPipeline.js';
+import { embeddingToF32Blob, f32BlobToEmbedding, embeddingToVectorString } from './embedding-codec.js';
+import { detectCapabilities, type DbCapabilities } from './capabilities.js';
+import * as Q from './queries.js';
 import type {
+  DatabaseInstance,
   IndexedTransaction,
   RefAccount,
   RefCategory,
@@ -53,9 +57,10 @@ const defaultEmbedding: EmbeddingFunctions = {
 // ---------------------------------------------------------------------------
 
 export class SearchIndex {
-  private db: InstanceType<typeof Database> | null = null;
+  private db: DatabaseInstance | null = null;
   private dbPath: string;
   private _ready = false;
+  private _caps: DbCapabilities | null = null;
   private emb: EmbeddingFunctions;
 
   constructor(dataDir: string, embeddingFns?: EmbeddingFunctions) {
@@ -81,6 +86,7 @@ export class SearchIndex {
 
     this.ensureSchema();
     this.runMigrations();
+    this._caps = detectCapabilities(this.db);
     this._ready = true;
     logger.info(`[SearchIndex] Opened at ${this.dbPath}`);
   }
@@ -91,6 +97,7 @@ export class SearchIndex {
     this.db.close();
     this.db = null;
     this._ready = false;
+    this._caps = null;
     logger.info('[SearchIndex] Closed');
   }
 
@@ -98,8 +105,12 @@ export class SearchIndex {
     return this._ready;
   }
 
+  get capabilities(): DbCapabilities | null {
+    return this._caps;
+  }
+
   /** Return the raw libsql Database handle (for HybridSearchEngine queries). */
-  getDb(): InstanceType<typeof Database> {
+  getDb(): DatabaseInstance {
     if (!this.db) throw new Error('SearchIndex not opened');
     return this.db;
   }
@@ -183,12 +194,13 @@ export class SearchIndex {
         value TEXT
       );
 
-      -- Embedding cache: dedup identical text → embedding mappings
+      -- Embedding cache: dedup identical text → embedding mappings.
       -- Text hash is MD5 of the input text; avoids re-embedding for
       -- repeated payee/category/notes combinations (~40% dedup rate).
+      -- Stored as BLOB (F32_BLOB wire format: LE float32, 4B/element).
       CREATE TABLE IF NOT EXISTS embedding_cache (
         text_hash  TEXT PRIMARY KEY,
-        embedding  F32_BLOB(${EMBEDDING_DIMS}),
+        embedding  BLOB NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
     `);
@@ -206,6 +218,24 @@ export class SearchIndex {
     } catch {
       // Column already exists — ignore
     }
+
+    // Migration 2: rebuild embedding_cache as BLOB if currently TEXT
+    // (earlier version used TEXT/JSON as a workaround; now properly using F32_BLOB binary)
+    try {
+      const info = Q.getTableInfo(db, 'embedding_cache');
+      const embCol = info.find((c) => c.name === 'embedding');
+      if (embCol && embCol.type === 'TEXT') {
+        db.exec('DROP TABLE embedding_cache');
+        db.exec(`CREATE TABLE embedding_cache (
+          text_hash  TEXT PRIMARY KEY,
+          embedding  BLOB NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )`);
+        logger.info('[SearchIndex] Migration: rebuilt embedding_cache with BLOB column (F32_BLOB binary)');
+      }
+    } catch {
+      // Table may not exist yet — schema creation will handle it
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -214,57 +244,25 @@ export class SearchIndex {
 
   populateAccounts(accounts: RefAccount[]): void {
     const db = this.requireDb();
-    const upsert = db.prepare(
-      'INSERT OR REPLACE INTO accounts (id, name) VALUES (?, ?)',
-    );
-    const tx = db.transaction(() => {
-      for (const a of accounts) {
-        upsert.run(a.id, a.name ?? '');
-      }
-    });
-    tx();
+    db.transaction(() => { for (const a of accounts) Q.upsertAccount(db, a.id, a.name ?? ''); })();
     logger.debug(`[SearchIndex] Populated ${accounts.length} accounts`);
   }
 
   populateCategories(categories: RefCategory[]): void {
     const db = this.requireDb();
-    const upsert = db.prepare(
-      'INSERT OR REPLACE INTO categories (id, name, group_id, group_name) VALUES (?, ?, ?, ?)',
-    );
-    const tx = db.transaction(() => {
-      for (const c of categories) {
-        upsert.run(c.id, c.name ?? '', c.group_id ?? '', c.group_name ?? '');
-      }
-    });
-    tx();
+    db.transaction(() => { for (const c of categories) Q.upsertCategory(db, c.id, c.name ?? '', c.group_id ?? '', c.group_name ?? ''); })();
     logger.debug(`[SearchIndex] Populated ${categories.length} categories`);
   }
 
   populatePayees(payees: RefPayee[]): void {
     const db = this.requireDb();
-    const upsert = db.prepare(
-      'INSERT OR REPLACE INTO payees (id, name) VALUES (?, ?)',
-    );
-    const tx = db.transaction(() => {
-      for (const p of payees) {
-        upsert.run(p.id, p.name ?? '');
-      }
-    });
-    tx();
+    db.transaction(() => { for (const p of payees) Q.upsertPayee(db, p.id, p.name ?? ''); })();
     logger.debug(`[SearchIndex] Populated ${payees.length} payees`);
   }
 
   populateCategoryGroups(groups: RefCategoryGroup[]): void {
     const db = this.requireDb();
-    const upsert = db.prepare(
-      'INSERT OR REPLACE INTO category_groups (id, name) VALUES (?, ?)',
-    );
-    const tx = db.transaction(() => {
-      for (const g of groups) {
-        upsert.run(g.id, g.name ?? '');
-      }
-    });
-    tx();
+    db.transaction(() => { for (const g of groups) Q.upsertCategoryGroup(db, g.id, g.name ?? ''); })();
     logger.debug(`[SearchIndex] Populated ${groups.length} category groups`);
   }
 
@@ -297,97 +295,107 @@ export class SearchIndex {
     const db = this.requireDb();
     const startMs = Date.now();
 
-    // ── Step 1: Load existing hashes for diff ─────────────────────────
-    const existingHashes = new Map<string, string>();
-    const hashRows = db.prepare('SELECT id, content_hash FROM transactions').all() as
-      { id: string; content_hash: string }[];
-    for (const r of hashRows) {
-      existingHashes.set(r.id, r.content_hash);
-    }
-
-    // ── Step 2: Compute new hashes and filter to changed rows ─────────
-    const changed: { tx: IndexedTransaction; hash: string }[] = [];
-    for (const tx of transactions) {
-      const h = SearchIndex.txHash(tx);
-      const prev = existingHashes.get(tx.id);
-      if (prev !== h) {
-        changed.push({ tx, hash: h });
-      }
-    }
-
+    const changed = this.diffTransactions(db, transactions);
     if (changed.length === 0) {
-      logger.info(
-        `[SearchIndex] Incremental sync: 0/${transactions.length} changed — skipping re-index`,
-      );
-      // Still update sync timestamp
-      db.prepare("INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_synced_at', ?)")
-        .run(new Date().toISOString());
+      logger.info(`[SearchIndex] Incremental sync: 0/${transactions.length} changed — skipping re-index`);
+      this.recordSyncTimestamp(db);
       return 0;
     }
 
+    logger.info(`[SearchIndex] Incremental sync: ${changed.length}/${transactions.length} changed — indexing`);
+
+    const stats = await this.indexChangedBatches(db, changed);
+    Q.optimizeFts(db);
+    this.recordSyncTimestamp(db);
+
+    const elapsed = Date.now() - startMs;
+    const hitRate = stats.cacheHits + stats.cacheMisses > 0
+      ? Math.round((stats.cacheHits / (stats.cacheHits + stats.cacheMisses)) * 100)
+      : 0;
     logger.info(
-      `[SearchIndex] Incremental sync: ${changed.length}/${transactions.length} changed — indexing`,
+      `[SearchIndex] Indexed ${stats.indexed} changed transactions in ${elapsed}ms ` +
+      `(embedding cache: ${stats.cacheHits} hits, ${stats.cacheMisses} misses, ${hitRate}% hit rate)`,
     );
 
-    // ── Step 3: Prepare statements ────────────────────────────────────
+    return stats.indexed;
+  }
+
+  private diffTransactions(
+    db: DatabaseInstance,
+    transactions: IndexedTransaction[],
+  ): { tx: IndexedTransaction; hash: string }[] {
+    const existingHashes = new Map<string, string>();
+    for (const r of Q.listTransactionHashes(db)) existingHashes.set(r.id, r.content_hash);
+
+    const changed: { tx: IndexedTransaction; hash: string }[] = [];
+    for (const tx of transactions) {
+      const h = SearchIndex.txHash(tx);
+      if (existingHashes.get(tx.id) !== h) changed.push({ tx, hash: h });
+    }
+    return changed;
+  }
+
+  private async resolveEmbedding(
+    db: DatabaseInstance,
+    text: string,
+  ): Promise<{ vec: number[] | null; hit: boolean }> {
+    const textHash = crypto.createHash('md5').update(text).digest('hex');
+    const cached = Q.getCachedEmbedding(db, textHash);
+
+    if (cached?.embedding) {
+      try {
+        if (typeof cached.embedding === 'string') {
+          return { vec: JSON.parse(cached.embedding) as number[], hit: true };
+        }
+        const vec = f32BlobToEmbedding(cached.embedding as Buffer | Uint8Array);
+        if (vec) return { vec, hit: true };
+      } catch {
+        // Corrupted cache entry — treat as miss
+      }
+    }
+
+    const vec = await this.emb.embed(text);
+    if (vec) {
+      const blob = embeddingToF32Blob(vec);
+      if (blob) {
+        try { Q.setCachedEmbedding(db, textHash, blob); } catch { /* non-fatal */ }
+      }
+    }
+    return { vec, hit: false };
+  }
+
+  private async indexChangedBatches(
+    db: DatabaseInstance,
+    changed: { tx: IndexedTransaction; hash: string }[],
+  ): Promise<{ indexed: number; cacheHits: number; cacheMisses: number }> {
     const upsertWithVec = db.prepare(`
       INSERT INTO transactions
         (id, date, amount, notes, payee_id, payee_name, category_id,
          category_name, account_id, account_name, is_transfer, cleared,
          content_hash, embedding)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, vector(?))
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, vector32(?))
       ON CONFLICT(id) DO UPDATE SET
-        date = excluded.date,
-        amount = excluded.amount,
-        notes = excluded.notes,
-        payee_id = excluded.payee_id,
-        payee_name = excluded.payee_name,
-        category_id = excluded.category_id,
-        category_name = excluded.category_name,
-        account_id = excluded.account_id,
-        account_name = excluded.account_name,
-        is_transfer = excluded.is_transfer,
-        cleared = excluded.cleared,
-        content_hash = excluded.content_hash,
-        embedding = excluded.embedding
+        date=excluded.date, amount=excluded.amount, notes=excluded.notes,
+        payee_id=excluded.payee_id, payee_name=excluded.payee_name,
+        category_id=excluded.category_id, category_name=excluded.category_name,
+        account_id=excluded.account_id, account_name=excluded.account_name,
+        is_transfer=excluded.is_transfer, cleared=excluded.cleared,
+        content_hash=excluded.content_hash, embedding=excluded.embedding
     `);
     const upsertNoVec = db.prepare(`
       INSERT INTO transactions
         (id, date, amount, notes, payee_id, payee_name, category_id,
          category_name, account_id, account_name, is_transfer, cleared,
-         content_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         content_hash, embedding)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
       ON CONFLICT(id) DO UPDATE SET
-        date = excluded.date,
-        amount = excluded.amount,
-        notes = excluded.notes,
-        payee_id = excluded.payee_id,
-        payee_name = excluded.payee_name,
-        category_id = excluded.category_id,
-        category_name = excluded.category_name,
-        account_id = excluded.account_id,
-        account_name = excluded.account_name,
-        is_transfer = excluded.is_transfer,
-        cleared = excluded.cleared,
-        content_hash = excluded.content_hash
+        date=excluded.date, amount=excluded.amount, notes=excluded.notes,
+        payee_id=excluded.payee_id, payee_name=excluded.payee_name,
+        category_id=excluded.category_id, category_name=excluded.category_name,
+        account_id=excluded.account_id, account_name=excluded.account_name,
+        is_transfer=excluded.is_transfer, cleared=excluded.cleared,
+        content_hash=excluded.content_hash, embedding=NULL
     `);
-
-    const ftsDelete = db.prepare(
-      'DELETE FROM fts_transactions WHERE txn_id = ?',
-    );
-    const ftsInsert = db.prepare(`
-      INSERT INTO fts_transactions (txn_id, payee_name, category_name, account_name, notes)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    // ── Step 4: Prepare embedding cache lookups ─────────────────────
-    const getCachedEmb = db.prepare(
-      'SELECT embedding FROM embedding_cache WHERE text_hash = ?',
-    );
-    const setCachedEmb = db.prepare(
-      'INSERT OR REPLACE INTO embedding_cache (text_hash, embedding) VALUES (?, vector(?))',
-    );
-
     let indexed = 0;
     let cacheHits = 0;
     let cacheMisses = 0;
@@ -396,63 +404,33 @@ export class SearchIndex {
     for (let i = 0; i < changed.length; i += BATCH_SIZE) {
       const batch = changed.slice(i, i + BATCH_SIZE);
 
-      // Generate embeddings — check cache first, call provider on miss
       const embeddings: (number[] | null)[] = [];
       for (const { tx } of batch) {
         const text = this.emb.buildTransactionText(tx);
-        const textHash = crypto.createHash('md5').update(text).digest('hex');
-
-        // Cache lookup
-        const cached = getCachedEmb.get(textHash) as { embedding: any } | undefined;
-        if (cached?.embedding) {
-          embeddings.push(cached.embedding);
-          cacheHits++;
-        } else {
-          const vec = await this.emb.embed(text);
-          embeddings.push(vec);
-          cacheMisses++;
-          // Store in cache for future reuse
-          if (vec) {
-            try {
-              setCachedEmb.run(textHash, JSON.stringify(vec));
-            } catch {
-              // Non-fatal — cache write failure doesn't block indexing
-            }
-          }
-        }
+        const { vec, hit } = await this.resolveEmbedding(db, text);
+        embeddings.push(vec);
+        if (hit) cacheHits++; else cacheMisses++;
       }
 
-      const writeBatch = db.transaction(() => {
+      db.transaction(() => {
         for (let j = 0; j < batch.length; j++) {
           const { tx, hash } = batch[j];
-          const baseArgs = [
-            tx.id,
-            tx.date,
-            tx.amount,
-            tx.notes,
-            tx.payee_id,
-            tx.payee_name,
-            tx.category_id,
-            tx.category_name,
-            tx.account_id,
-            tx.account_name,
-            tx.is_transfer ? 1 : 0,
-            tx.cleared ? 1 : 0,
-            hash,
+          const base = [
+            tx.id, tx.date, tx.amount, tx.notes,
+            tx.payee_id, tx.payee_name, tx.category_id, tx.category_name,
+            tx.account_id, tx.account_name, tx.is_transfer ? 1 : 0, tx.cleared ? 1 : 0, hash,
           ] as const;
 
           if (embeddings[j]) {
-            upsertWithVec.run(...baseArgs, JSON.stringify(embeddings[j]));
+            upsertWithVec.run(...base, embeddingToVectorString(embeddings[j]!));
           } else {
-            upsertNoVec.run(...baseArgs);
+            upsertNoVec.run(...base);
           }
 
-          // Sync FTS5
-          ftsDelete.run(tx.id);
-          ftsInsert.run(tx.id, tx.payee_name, tx.category_name, tx.account_name, tx.notes);
+          Q.deleteFtsEntry(db, tx.id);
+          Q.insertFtsEntry(db, tx.id, tx.payee_name, tx.category_name, tx.account_name, tx.notes);
         }
-      });
-      writeBatch();
+      })();
       indexed += batch.length;
 
       if (indexed % 500 === 0) {
@@ -460,23 +438,11 @@ export class SearchIndex {
       }
     }
 
-    // Optimize FTS5
-    db.exec("INSERT INTO fts_transactions(fts_transactions) VALUES('optimize')");
+    return { indexed, cacheHits, cacheMisses };
+  }
 
-    // Record sync time
-    db.prepare("INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_synced_at', ?)")
-      .run(new Date().toISOString());
-
-    const elapsed = Date.now() - startMs;
-    const hitRate = cacheHits + cacheMisses > 0
-      ? Math.round((cacheHits / (cacheHits + cacheMisses)) * 100)
-      : 0;
-    logger.info(
-      `[SearchIndex] Indexed ${indexed} changed transactions in ${elapsed}ms ` +
-      `(embedding cache: ${cacheHits} hits, ${cacheMisses} misses, ${hitRate}% hit rate)`,
-    );
-
-    return indexed;
+  private recordSyncTimestamp(db: DatabaseInstance): void {
+    Q.setSyncTimestamp(db, new Date().toISOString());
   }
 
   /**
@@ -485,20 +451,17 @@ export class SearchIndex {
    */
   pruneStale(currentIds: Set<string>): number {
     const db = this.requireDb();
-    const allRows = db.prepare('SELECT id FROM transactions').all() as { id: string }[];
+    const allRows = Q.listTransactionIds(db);
     const toDelete = allRows.filter((r) => !currentIds.has(r.id)).map((r) => r.id);
 
     if (toDelete.length === 0) return 0;
 
-    const del = db.prepare('DELETE FROM transactions WHERE id = ?');
-    const ftsDel = db.prepare('DELETE FROM fts_transactions WHERE txn_id = ?');
-    const tx = db.transaction(() => {
+    db.transaction(() => {
       for (const id of toDelete) {
-        ftsDel.run(id);
-        del.run(id);
+        Q.deleteFtsEntry(db, id);
+        Q.deleteTransaction(db, id);
       }
-    });
-    tx();
+    })();
 
     logger.info(`[SearchIndex] Pruned ${toDelete.length} stale transactions`);
     return toDelete.length;
@@ -510,10 +473,10 @@ export class SearchIndex {
 
   getStats(): SearchIndexStats {
     const db = this.requireDb();
-    const txnCount = (db.prepare('SELECT COUNT(*) as c FROM transactions').get() as { c: number }).c;
-    const accCount = (db.prepare('SELECT COUNT(*) as c FROM accounts').get() as { c: number }).c;
-    const catCount = (db.prepare('SELECT COUNT(*) as c FROM categories').get() as { c: number }).c;
-    const payCount = (db.prepare('SELECT COUNT(*) as c FROM payees').get() as { c: number }).c;
+    const txnCount = Q.countTransactions(db);
+    const accCount = Q.countAccounts(db);
+    const catCount = Q.countCategories(db);
+    const payCount = Q.countPayees(db);
 
     let sizeBytes = 0;
     try {
@@ -523,16 +486,13 @@ export class SearchIndex {
       // file may not exist yet
     }
 
-    const lastSynced = db.prepare("SELECT value FROM sync_meta WHERE key = 'last_synced_at'").get() as
-      | { value: string }
-      | undefined;
+    const lastSyncedTs = Q.getSyncTimestamp(db);
 
     const modelInfo = this.emb.getModelInfo();
 
-    // Embedding cache stats
     let embeddingCacheSize = 0;
     try {
-      embeddingCacheSize = (db.prepare('SELECT COUNT(*) as c FROM embedding_cache').get() as { c: number }).c;
+      embeddingCacheSize = Q.countEmbeddingCache(db);
     } catch {
       // Table may not exist on old schema
     }
@@ -544,7 +504,7 @@ export class SearchIndex {
       totalPayees: payCount,
       embeddingCacheEntries: embeddingCacheSize,
       indexSizeBytes: sizeBytes,
-      lastSyncedAt: lastSynced?.value ?? null,
+      lastSyncedAt: lastSyncedTs,
       embeddingModel: modelInfo.model,
       embeddingDimensions: modelInfo.dimensions,
     };
@@ -554,7 +514,7 @@ export class SearchIndex {
   // Helpers
   // -------------------------------------------------------------------------
 
-  private requireDb(): InstanceType<typeof Database> {
+  private requireDb(): DatabaseInstance {
     if (!this.db) throw new Error('SearchIndex not opened — call open() first');
     return this.db;
   }

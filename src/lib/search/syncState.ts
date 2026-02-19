@@ -1,23 +1,40 @@
 /**
- * Shared sync state for the search index.
+ * Budget-scoped sync state for the search index.
  *
- * Lives in the search module (not the tool) to avoid circular imports
- * between CacheInvalidator → hybrid_search → config/adapter.
+ * Tracks which budget IDs have been synced in the current process lifetime.
+ * On restart, all budgets are considered un-synced (conservative approach).
  */
 
-let _synced = false;
+const _syncedBudgets = new Set<string>();
 
-/** Mark the search index as needing a re-sync on next query. */
-export function markSearchIndexDirty(): void {
-  _synced = false;
+let _activeBudgetId: string | null = null;
+
+export function setActiveBudget(budgetId: string): void {
+  _activeBudgetId = budgetId;
 }
 
-/** Check if the search index has been synced. */
-export function isSearchIndexSynced(): boolean {
-  return _synced;
+export function getActiveBudget(): string | null {
+  return _activeBudgetId;
 }
 
-/** Mark the search index as synced. */
-export function markSearchIndexSynced(): void {
-  _synced = true;
+export function markSearchIndexDirty(budgetId?: string): void {
+  const id = budgetId ?? _activeBudgetId;
+  if (id) {
+    _syncedBudgets.delete(id);
+  } else {
+    _syncedBudgets.clear();
+  }
+}
+
+export function isSearchIndexSynced(budgetId?: string): boolean {
+  const id = budgetId ?? _activeBudgetId;
+  if (!id) return false;
+  return _syncedBudgets.has(id);
+}
+
+export function markSearchIndexSynced(budgetId?: string): void {
+  const id = budgetId ?? _activeBudgetId;
+  if (id) {
+    _syncedBudgets.add(id);
+  }
 }
