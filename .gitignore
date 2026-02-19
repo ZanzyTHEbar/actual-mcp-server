@@ -58,6 +58,8 @@ tests/manual/test-stack/librechat/mongo-data/
 tests/manual/test-stack/librechat/pgvector-data/
 tests/manual/test-stack/librechat/meilisearch-data/
 tests/manual/test-stack/librechat/rag-data/
+test-data/
+test-tmp/
 
 # Temporary test directories (root level only)
 /*-check/
