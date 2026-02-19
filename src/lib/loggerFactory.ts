@@ -6,7 +6,7 @@
  * easier tracing and debugging in production.
  */
 
-import logger from '../logger.js';
+import logger, { sanitizeError } from '../logger.js';
 
 /**
  * Module-specific logger interface
@@ -79,11 +79,9 @@ export function createModuleLogger(moduleName: string): ModuleLogger {
 
     error: (message: string, error?: Error, meta?: object) => {
       if (error) {
-        logger.error(`${prefix} ${message}`, {
-          error: error.message,
-          stack: error.stack,
-          ...meta,
-        });
+        const se = sanitizeError(error);
+        logger.error(`${prefix} ${message} %s`, se.message);
+        if (se.stack) logger.error(se.stack);
       } else {
         logger.error(`${prefix} ${message}`, meta);
       }

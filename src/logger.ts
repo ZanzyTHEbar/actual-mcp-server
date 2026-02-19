@@ -55,6 +55,18 @@ const SENSITIVE_KEYS = [
   'syncid',
   'api_key',
   'apikey',
+  'credential',
+  'credentials',
+  'bearer',
+  'jwt',
+  'access_token',
+  'refresh_token',
+  'session_token',
+  'api_token',
+  'auth_token',
+  'private_key',
+  'passphrase',
+  'pin',
 ];
 
 function shouldRedactKey(key: string): boolean {
@@ -62,7 +74,7 @@ function shouldRedactKey(key: string): boolean {
   return SENSITIVE_KEYS.some((k) => normalized.includes(k));
 }
 
-function sanitizeForLog(value: unknown): unknown {
+export function sanitizeForLog(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeForLog(item));
   }
@@ -79,6 +91,35 @@ function sanitizeForLog(value: unknown): unknown {
     return output;
   }
   return value;
+}
+
+const SENSITIVE_PATTERNS: [RegExp, string][] = [
+  [/Bearer\s+[\S]+/gi, 'Bearer [REDACTED]'],
+  [/password['"]?\s*[:=]\s*['"]?[^\s'"]+/gi, 'password=[REDACTED]'],
+  [/token['"]?\s*[:=]\s*['"]?[\S]+/gi, 'token=[REDACTED]'],
+  [/api[_-]?key['"]?\s*[:=]\s*['"]?[\S]+/gi, 'api_key=[REDACTED]'],
+  [/secret['"]?\s*[:=]\s*['"]?[\S]+/gi, 'secret=[REDACTED]'],
+  [/auth(orization)?['"]?\s*[:=]\s*['"]?[\S]+/gi, 'authorization=[REDACTED]'],
+];
+
+function sanitizeString(str: string): string {
+  if (typeof str !== 'string') return String(str);
+  let out = str;
+  for (const [pattern, replacement] of SENSITIVE_PATTERNS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
+export function sanitizeError(err: unknown): { message: string; stack?: string; name?: string } {
+  if (err instanceof Error) {
+    return {
+      message: sanitizeString(err.message),
+      stack: err.stack ? sanitizeString(err.stack) : undefined,
+      name: err.name,
+    };
+  }
+  return { message: sanitizeString(String(err ?? 'Unknown error')) };
 }
 
 const transports: winston.transport[] = [];

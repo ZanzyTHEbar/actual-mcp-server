@@ -1,4 +1,6 @@
 // Add global error handlers
+import { sanitizeError } from './logger.js';
+
 let isHandlingQueryError = false;
 
 function getUnhandledReasonMessage(reason: unknown): string {
@@ -31,11 +33,12 @@ function getUnhandledReasonStack(reason: unknown): string {
 }
 
 process.on('unhandledRejection', (reason, promise) => {
+  const se = sanitizeError(reason);
   console.error('=== UNHANDLED REJECTION ===');
   console.error('Promise:', promise);
-  console.error('Reason:', reason);
-  if (reason instanceof Error) {
-    console.error('Stack:', reason.stack);
+  console.error('Reason:', se.message);
+  if (se.stack) {
+    console.error('Stack:', se.stack);
   }
   console.error('===========================');
 
@@ -80,7 +83,9 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
+  const se = sanitizeError(error);
+  console.error('Uncaught Exception:', se.message);
+  if (se.stack) console.error(se.stack);
   process.exit(1);
 });
 

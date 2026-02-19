@@ -8,7 +8,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import logger from '../logger.js';
+import logger, { sanitizeForLog, sanitizeError } from '../logger.js';
 import { getLocalIp } from '../utils.js';
 import actualToolsManager from '../actualToolsManager.js';
 import { sessionWorkerManager } from '../lib/SessionWorkerManager.js';
@@ -183,7 +183,7 @@ export async function startHttpServer(
         throw new Error('Tool name must be a string');
       }
       const name = rawName;
-      logger.debug(`[TOOL CALL] ${name} args=${JSON.stringify(args)}`);
+      logger.debug(`[TOOL CALL] ${name} args=${JSON.stringify(sanitizeForLog(args))}`);
       // Prefer ActualMCPConnection executor if provided
       const context = requestContext.getStore();
       const sessionId = context?.sessionId;
@@ -389,7 +389,7 @@ export async function startHttpServer(
               logger.info(`[SESSION] Worker session initialized for session: ${sid}`);
               resolveInit?.();
             } catch (err) {
-              logger.error(`[SESSION] Failed to initialize worker for session ${sid}:`, err);
+              logger.error(`[SESSION] Failed to initialize worker for session ${sid}: ${sanitizeError(err).message}`);
               rejectInit?.(err);
             } finally {
               // Clean up the promise after a short delay to allow pending requests to complete
@@ -406,9 +406,9 @@ export async function startHttpServer(
             await transport.handleRequest(req, res, req.body);
           });
         } catch (err: unknown) {
-          logger.error('Transport.handleRequest failed during initialize: %o', err);
-          const e = err as Error | { stack?: unknown } | undefined;
-          if (e && typeof e.stack === 'string') logger.error(e.stack);
+          const initErr = sanitizeError(err);
+          logger.error('Transport.handleRequest failed during initialize: %s', initErr.message);
+          if (initErr.stack) logger.error(initErr.stack);
           throw err;
         }
         return;
@@ -429,7 +429,7 @@ export async function startHttpServer(
               logger.debug(`[SESSION] Session ${sessionId} initialization complete, proceeding with request`);
             }
           } catch (err) {
-            logger.error(`[SESSION] Session ${sessionId} initialization failed:`, err);
+            logger.error(`[SESSION] Session ${sessionId} initialization failed: ${sanitizeError(err).message}`);
             // Fall through to session not found handling
           }
         }
@@ -506,9 +506,9 @@ export async function startHttpServer(
         await transport.handleRequest(req, res, req.body);
       });
     } catch (err: unknown) {
-      logger.error('POST handler error: %o', err);
-      const e2 = err as Error | { stack?: unknown } | undefined;
-      if (e2 && typeof e2.stack === 'string') logger.error(e2.stack);
+      const sanitized = sanitizeError(err);
+      logger.error('POST handler error: %s', sanitized.message);
+      if (sanitized.stack) logger.error(sanitized.stack);
       if (!res.headersSent) {
         res.status(500).json({ jsonrpc: '2.0', id: payload?.id ?? null, error: { code: -32603, message: String(err) } });
       }

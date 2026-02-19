@@ -46,7 +46,7 @@ import api from '@actual-app/api';
 import { EventEmitter } from 'events';
 import observability from '../observability.js';
 import retry from './retry.js';
-import logger from '../logger.js';
+import logger, { sanitizeError } from '../logger.js';
 
 /**
  * Helper to init and shutdown Actual API around each operation
@@ -110,7 +110,8 @@ async function initActualApiForOperation(): Promise<void> {
     logger.debug('[ADAPTER] Actual API initialized for operation');
   } catch (err: any) {
     const msg = err?.message || String(err);
-    logger.error('[ADAPTER] Error initializing Actual API:', err);
+    const se = sanitizeError(err);
+    logger.error('[ADAPTER] Error initializing Actual API: %s', se.message);
 
     // Provide actionable remediation hints
     if (msg.includes('ACTUAL_SERVER_URL') || msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
@@ -143,7 +144,8 @@ async function shutdownActualApi(): Promise<void> {
       logger.debug('[ADAPTER] Actual API shutdown complete');
     }
   } catch (err) {
-    logger.error('[ADAPTER] Error during Actual API shutdown:', err);
+    const se = sanitizeError(err);
+    logger.error('[ADAPTER] Error during Actual API shutdown: %s', se.message);
   }
 }
 
