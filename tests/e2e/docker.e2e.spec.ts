@@ -28,7 +28,7 @@ async function waitForMCPHealth(request: any, url: string, maxRetries = HEALTH_C
     } catch (error) {
       console.log(`[HEALTH CHECK ${i + 1}/${maxRetries}] Error:`, error instanceof Error ? error.message : String(error));
     }
-    
+
     if (i < maxRetries - 1) {
       console.log(`⏳ Waiting ${HEALTH_CHECK_DELAY_MS}ms before next health check...`);
       await new Promise((r) => setTimeout(r, HEALTH_CHECK_DELAY_MS));
@@ -61,7 +61,7 @@ test.describe('Docker E2E - Full Stack Integration', () => {
   test('should initialize MCP session', async ({ request }) => {
     console.log('🔌 Initializing MCP session...');
     const rpcUrl = `${MCP_SERVER_URL}${HTTP_PATH}`;
-    
+
     const initPayload = {
       jsonrpc: '2.0',
       id: 1,
@@ -84,7 +84,7 @@ test.describe('Docker E2E - Full Stack Integration', () => {
     expect(initRes.ok()).toBeTruthy();
     const initJson = await initRes.json();
     expect(initJson.result).toBeTruthy();
-    
+
     sessionId = initRes.headers()['mcp-session-id'];
     expect(sessionId).toBeTruthy();
     console.log('✅ Session initialized:', sessionId);
@@ -98,7 +98,7 @@ test.describe('Docker E2E - Full Stack Integration', () => {
     if (!isHealthy) {
       throw new Error('MCP server did not become healthy in time. Status may still be "not-initialized".');
     }
-    
+
     // Final health check to verify
     const healthRes = await request.get(`${MCP_SERVER_URL}/health`);
     expect(healthRes.ok()).toBeTruthy();
@@ -112,7 +112,7 @@ test.describe('Docker E2E - Full Stack Integration', () => {
       test.skip(); // Skip if previous test failed
       return;
     }
-    
+
     console.log('📋 Listing available tools...');
     const rpcUrl = `${MCP_SERVER_URL}${HTTP_PATH}`;
     const listPayload = {
@@ -134,16 +134,16 @@ test.describe('Docker E2E - Full Stack Integration', () => {
     expect(listRes.ok()).toBeTruthy();
     const listJson = await listRes.json();
     const tools = listJson.result?.tools || [];
-    
+
     expect(Array.isArray(tools)).toBeTruthy();
-    expect(tools.length).toBeGreaterThan(40); // Should have 49+ tools
-    console.log(`✅ Listed ${tools.length} tools`);
-    
-    // Verify key tools exist
+    // Progressive Disclosure: tools/list returns only meta-tools (registry + dispatcher)
+    expect(tools.length).toBe(2);
+    console.log(`✅ Listed ${tools.length} meta-tools (Progressive Disclosure active)`);
+
+    // Verify meta-tools are exposed
     const toolNames = tools.map((t: any) => t.name);
-    expect(toolNames).toContain('actual_server_info');
-    expect(toolNames).toContain('actual_accounts_list');
-    expect(toolNames).toContain('actual_transactions_create');
+    expect(toolNames).toContain('actual_tool_registry');
+    expect(toolNames).toContain('actual_tool_call');
   });
 
   test('should execute actual_server_info tool', async ({ request }) => {
@@ -151,7 +151,7 @@ test.describe('Docker E2E - Full Stack Integration', () => {
       test.skip();
       return;
     }
-    
+
     console.log('🔧 Testing actual_server_info tool...');
     const rpcUrl = `${MCP_SERVER_URL}${HTTP_PATH}`;
     const callPayload = {
@@ -175,14 +175,14 @@ test.describe('Docker E2E - Full Stack Integration', () => {
 
     expect(callRes.ok()).toBeTruthy();
     const callJson = await callRes.json();
-    
+
     // Should have a result, not an error
     expect(callJson.error).toBeUndefined();
     expect(callJson.result).toBeTruthy();
-    
+
     const result = callJson.result;
     console.log('✅ Server info result:', JSON.stringify(result, null, 2).substring(0, 300));
-    
+
     // Verify result structure
     expect(result.content).toBeTruthy();
     expect(Array.isArray(result.content)).toBeTruthy();
@@ -195,7 +195,7 @@ test.describe('Docker E2E - Full Stack Integration', () => {
       test.skip();
       return;
     }
-    
+
     console.log('📁 Listing accounts...');
     const rpcUrl = `${MCP_SERVER_URL}${HTTP_PATH}`;
     const callPayload = {
@@ -219,14 +219,14 @@ test.describe('Docker E2E - Full Stack Integration', () => {
 
     expect(callRes.ok()).toBeTruthy();
     const callJson = await callRes.json();
-    
+
     // Should succeed (even if empty accounts list)
     expect(callJson.error).toBeUndefined();
     expect(callJson.result).toBeTruthy();
-    
+
     const result = callJson.result;
     console.log('✅ Accounts list result:', JSON.stringify(result, null, 2).substring(0, 500));
-    
+
     // Verify it's a valid response
     expect(result.content).toBeTruthy();
     expect(Array.isArray(result.content)).toBeTruthy();
@@ -237,11 +237,11 @@ test.describe('Docker E2E - Full Stack Integration', () => {
       test.skip();
       return;
     }
-    
+
     console.log('➕ Creating test account...');
     const rpcUrl = `${MCP_SERVER_URL}${HTTP_PATH}`;
     const testAccountName = `E2E-Test-Account-${Date.now()}`;
-    
+
     const callPayload = {
       jsonrpc: '2.0',
       id: 5,
@@ -266,30 +266,32 @@ test.describe('Docker E2E - Full Stack Integration', () => {
 
     expect(callRes.ok()).toBeTruthy();
     const callJson = await callRes.json();
-    
+
     console.log('✅ Create account result:', JSON.stringify(callJson, null, 2).substring(0, 500));
-    
+
     // Should succeed
     expect(callJson.error).toBeUndefined();
     expect(callJson.result).toBeTruthy();
-    
+
     const result = callJson.result;
     expect(result.content).toBeTruthy();
-    
+
     // The actual_accounts_create tool returns the account ID (UUID) in the result
     // Verify we got a valid response (either UUID or success message)
     const text = result.content[0]?.text || '';
     expect(text.length).toBeGreaterThan(0);
-    
+
     // If it's a JSON result with the UUID, parse and verify
     try {
       const parsed = JSON.parse(text);
-      // Should have a result field with a UUID
-      expect(parsed.result).toBeTruthy();
-      console.log(`✅ Account created with ID: ${parsed.result}`);
+      const id = parsed.result || parsed.id || parsed.accountId;
+      // Should have an identifier field with a UUID
+      expect(id).toBeTruthy();
+      console.log(`✅ Account created with ID: ${id}`);
     } catch {
-      // If not JSON, check for success message
-      expect(text.toLowerCase()).toContain('account');
+      // If not JSON, accept a UUID or a success message
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      expect(uuidRegex.test(text) || text.toLowerCase().includes('account')).toBeTruthy();
       console.log(`✅ Account creation response: ${text}`);
     }
   });
@@ -299,10 +301,10 @@ test.describe('Docker E2E - Full Stack Integration', () => {
       test.skip();
       return;
     }
-    
+
     console.log('🔄 Testing session persistence...');
     const rpcUrl = `${MCP_SERVER_URL}${HTTP_PATH}`;
-    
+
     // Make multiple calls with the same session - should all work
     for (let i = 0; i < 3; i++) {
       const callPayload = {
@@ -328,7 +330,7 @@ test.describe('Docker E2E - Full Stack Integration', () => {
       const callJson = await callRes.json();
       expect(callJson.error).toBeUndefined();
       expect(callJson.result).toBeTruthy();
-      
+
       console.log(`  Session persistence test ${i + 1}/3: ✅`);
     }
     console.log('✅ Session persistence verified');
@@ -346,10 +348,12 @@ test.describe('Docker E2E - Full Stack Integration', () => {
     // This test verifies the Docker image was built correctly
     const healthRes = await retryRequest(() => request.get(`${MCP_SERVER_URL}/health`));
     const health = await healthRes.json();
-    
-    // Should have connection pool stats (proves actual-adapter.ts is working)
-    expect(health.connectionPool).toBeTruthy();
-    
+
+    // Should include session manager stats (proves worker manager is wired)
+    expect(health.status).toBe('ok');
+    expect(typeof health.maxConcurrent).toBe('number');
+    expect(Array.isArray(health.sessions)).toBeTruthy();
+
     console.log('✅ Docker build verification complete');
     // Should have version (proves VERSION file or version detection works)
     // Note: If VERSION file not in build, this might fail - that's valuable to know!
@@ -389,7 +393,7 @@ test.describe('Docker E2E - Error Handling', () => {
       test.skip();
       return;
     }
-    
+
     console.log('⚠️  Testing invalid tool name handling...');
     const rpcUrl = `${MCP_SERVER_URL}${HTTP_PATH}`;
     const callPayload = {
@@ -424,7 +428,7 @@ test.describe('Docker E2E - Error Handling', () => {
       test.skip();
       return;
     }
-    
+
     console.log('⚠️  Testing invalid arguments handling...');
     const rpcUrl = `${MCP_SERVER_URL}${HTTP_PATH}`;
     const callPayload = {

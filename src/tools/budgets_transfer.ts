@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 
@@ -15,7 +16,7 @@ const tool: ToolDefinition = {
   name: 'actual_budgets_transfer',
   description: 'Transfer budget amount between categories. Decreases the source category budget and increases the target category budget by the specified amount for the given month.',
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
     
     if (input.amount <= 0) {
@@ -78,7 +79,7 @@ const tool: ToolDefinition = {
         },
       },
     };
-  },
+  }),
 };
 
 export default tool;

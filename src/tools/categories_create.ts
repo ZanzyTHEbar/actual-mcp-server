@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { paths } from '../../generated/actual-client/types.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
@@ -17,7 +18,7 @@ const tool: ToolDefinition = {
   name: 'actual_categories_create',
   description: "Create a category. REQUIRED: group_id (category group UUID). Use actual_category_groups_get to find available groups. Optional: is_income (boolean, defaults to false for expense categories).",
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     // Validate input with helpful error messages
     let input;
     try {
@@ -40,7 +41,7 @@ const tool: ToolDefinition = {
       }
       throw error;
     }
-
+  
     try {
       // Input already has correct field names (group_id, is_income)
       // Convert null to false (LibreChat sometimes sends null instead of undefined)
@@ -69,7 +70,7 @@ const tool: ToolDefinition = {
       
       throw new Error(`Failed to create category: ${errorMessage}`);
     }
-  },
+  }),
 };
 
 export default tool;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 
@@ -15,11 +16,11 @@ const tool: ToolDefinition = {
   name: 'actual_category_groups_update',
   description: `Update an existing category group in Actual Budget. You can rename the group, change whether it's an income group, or hide/show it.`,
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
     await adapter.updateCategoryGroup(input.id, input.fields);
     return { success: true };
-  },
+  }),
 };
 
 export default tool;

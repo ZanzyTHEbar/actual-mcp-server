@@ -47,8 +47,11 @@ export async function testAllTools() {
     try {
       logger.info(`⚙️  Testing tool: ${name}`);
       const testArgs = getTestArgs(name);
-      const result = await actualToolsManager.callTool(name, testArgs);
-      logger.info(`✅ Tool ${name} output: ${JSON.stringify(result, null, 2)}`);
+      const result = await actualToolsManager.callTool(name, testArgs) as { content?: unknown[] };
+      if (!result || typeof result !== 'object' || !Array.isArray(result.content)) {
+        throw new Error(`Tool ${name} did not return a valid MCP CallToolResult (missing content array)`);
+      }
+      logger.info(`✅ Tool ${name} output: contentItems=${result.content.length}`);
       results.push({ name, success: true });
     } catch (err: unknown) {
       const message = err && typeof (err as { message?: unknown })?.message === 'string' ? (err as { message: string }).message : String(err);

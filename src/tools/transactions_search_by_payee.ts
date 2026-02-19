@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
+import { getCachedAccounts, getCachedPayees, getCachedCategories, getAccountMap } from '../lib/cachedRefs.js';
 
 const InputSchema = z.object({
   payeeName: z.string().optional().describe('Name of the payee/vendor to search for (optional for smoke tests)'),
@@ -24,20 +26,19 @@ const tool: ToolDefinition = {
   name: 'actual_transactions_search_by_payee',
   description: 'Search transactions by payee name. Returns all transactions for a specific payee with optional date range, category, and amount filters. Useful for analyzing spending patterns with specific vendors or service providers.',
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
-    
+
     // Step 0: Validate accountId exists if provided
     if (input.accountId) {
-      const accounts = await adapter.getAccounts();
+      const accounts = await getCachedAccounts();
       const accountExists = accounts.some((acc: any) => acc.id === input.accountId);
-      
+
       if (!accountExists) {
-        // Check if user provided account name instead of UUID
-        const accountByName = accounts.find((acc: any) => 
+        const accountByName = accounts.find((acc: any) =>
           acc.name && acc.name.toLowerCase() === input.accountId!.toLowerCase()
         );
-        
+
         if (accountByName) {
           return {
             transactions: [],
@@ -47,7 +48,7 @@ const tool: ToolDefinition = {
             error: `Account '${input.accountId}' appears to be a name, not an ID. Use account UUID '${accountByName.id}' instead.`,
           };
         }
-        
+
         return {
           transactions: [],
           count: 0,
@@ -57,16 +58,15 @@ const tool: ToolDefinition = {
         };
       }
     }
-    
-    // Step 1: Find payee ID by name
+
+    // Step 1: Find payee ID by name (cached)
     let payeeId: string | undefined;
     if (input.payeeName) {
-      const payees = await adapter.getPayees();
-      const payee = payees.find((p: any) => 
+      const payees = await getCachedPayees();
+      const payee = payees.find((p: any) =>
         p.name && p.name.toLowerCase() === input.payeeName!.toLowerCase()
       );
       if (!payee) {
-        // Payee not found - return empty result
         return {
           transactions: [],
           count: 0,
@@ -77,14 +77,14 @@ const tool: ToolDefinition = {
       }
       payeeId = payee.id;
     }
-    
-    // Step 2: Get base transactions (filtered by account and date range if provided)
+
+    // Step 2: Get base transactions (not cached — unique per date/account filter)
     const allTransactions = await adapter.getTransactions(
       input.accountId,
       input.startDate,
       input.endDate
     );
-    
+
     if (!Array.isArray(allTransactions)) {
       return {
         transactions: [],
@@ -93,25 +93,22 @@ const tool: ToolDefinition = {
         payeeName: input.payeeName,
       };
     }
-    
+
     // Step 3: Apply JavaScript filters
     let filtered = allTransactions;
-    
-    // Filter by payee ID
+
     if (payeeId) {
       filtered = filtered.filter((t: any) => t.payee === payeeId);
     }
-    
-    // Filter by category name (need to lookup category ID)
+
     if (input.categoryName) {
-      const categories = await adapter.getCategories();
+      const categories = await getCachedCategories();
       const category = categories.find((c: any) =>
         c.name && c.name.toLowerCase() === input.categoryName!.toLowerCase()
       );
       if (category) {
         filtered = filtered.filter((t: any) => t.category === category.id);
       } else {
-        // Category not found - return empty
         return {
           transactions: [],
           count: 0,
@@ -121,43 +118,39 @@ const tool: ToolDefinition = {
         };
       }
     }
-    
-    // Filter by amount range
+
     if (input.minAmount !== undefined) {
       filtered = filtered.filter((t: any) => (t.amount || 0) >= input.minAmount!);
     }
     if (input.maxAmount !== undefined) {
       filtered = filtered.filter((t: any) => (t.amount || 0) <= input.maxAmount!);
     }
-    
-    // Sort by date descending and apply limit
+
     filtered.sort((a: any, b: any) => {
       const dateA = a.date || '';
       const dateB = b.date || '';
       return dateB.localeCompare(dateA);
     });
-    
+
     const limited = filtered.slice(0, input.limit || 100);
-    
-    // Enrich transactions with account names
-    const accounts = await adapter.getAccounts();
-    const accountMap = new Map(accounts.map((acc: any) => [acc.id, acc.name]));
-    
+
+    // Enrich with cached account names
+    const accountMap = await getAccountMap();
+
     const enrichedTransactions = limited.map((t: any) => ({
       ...t,
       accountName: accountMap.get(t.account) || t.account,
     }));
-    
-    // Calculate summary stats
+
     const totalAmount = limited.reduce((sum: number, t: any) => sum + (t.amount || 0), 0);
-    
+
     return {
       transactions: enrichedTransactions,
       count: enrichedTransactions.length,
       totalAmount,
       payeeName: input.payeeName,
     };
-  },
+  }),
 };
 
 export default tool;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import { connectionPool } from '../lib/ActualConnectionPool.js';
 import { shutdownActualForSession } from '../actualConnection.js';
@@ -11,7 +12,7 @@ const tool: ToolDefinition = {
   name: 'actual_session_close',
   description: 'Close an idle MCP session to free up connection slots. Useful when you get "Max concurrent sessions reached" errors. Only closes sessions other than the current one.',
   inputSchema: InputSchema,
-  call: async (args: unknown, meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, meta?: unknown) => {
     const input = InputSchema.parse(args || {});
     const stats = connectionPool.getStats();
     
@@ -23,15 +24,15 @@ const tool: ToolDefinition = {
         maxConcurrent: stats.maxConcurrent,
       };
     }
-
+  
     // Get current session ID from request context to prevent closing own session
     const { requestContext } = await import('../server/httpServer.js');
     const context = requestContext.getStore();
     const currentSessionId = context?.sessionId;
-
+  
     // Find session to close
     let targetSessionId: string | null = null;
-
+  
     if (input.sessionId) {
       // Find session by partial match
       const matchingSessions = stats.sessions.filter(s => 
@@ -71,7 +72,7 @@ const tool: ToolDefinition = {
       
       targetSessionId = sortedSessions[0].sessionId;
     }
-
+  
     // Don't allow closing current session
     if (currentSessionId && targetSessionId.includes(currentSessionId)) {
       return {
@@ -80,7 +81,7 @@ const tool: ToolDefinition = {
         currentSessionId,
       };
     }
-
+  
     // Close the session
     try {
       // Verify session exists in connection pool
@@ -93,7 +94,7 @@ const tool: ToolDefinition = {
           availableSessions: Array.from(connectionMap.keys()),
         };
       }
-
+  
       await shutdownActualForSession(targetSessionId! as string);
       
       const newStats = connectionPool.getStats();
@@ -113,7 +114,7 @@ const tool: ToolDefinition = {
         error: String(err),
       };
     }
-  },
+  }),
 };
 
 export default tool;

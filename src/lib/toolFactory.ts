@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import { createModuleLogger } from './loggerFactory.js';
 import observability from '../observability.js';
+import { ensureCallToolResult } from './toolResult.js';
 
 const log = createModuleLogger('TOOLS');
 
@@ -123,7 +124,7 @@ export function createTool<TInput = any, TOutput = any>(
         // Track observability
         await observability.incrementToolCall(name);
         
-        return { result };
+        return ensureCallToolResult(result);
       } catch (error) {
         // Log error with details
         const duration = Date.now() - startTime;

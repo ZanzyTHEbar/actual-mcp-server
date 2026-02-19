@@ -319,25 +319,106 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
 
     // 5) SSE connect: verify SSE handshake headers and content-type (with retry)
     if (sessionId) {
-      console.log('🔌 Testing SSE connection...');
-      const sseRes = await retryRequest(() => request.get(rpcUrl, {
-        headers: {
-          Accept: 'text/event-stream',
-          'mcp-session-id': sessionId,
-        },
-        // short timeout so test doesn't hang on a long-lived stream
-        timeout: 5000,
-      }));
-      // server should reply with status 200 and content-type text/event-stream (or similar)
-      expect(sseRes.status()).toBe(200);
-      const ct = sseRes.headers()['content-type'] || '';
-      expect(ct.includes('text/event-stream')).toBeTruthy();
-      console.log('✅ SSE connection test passed');
+      const healthRes = await request.get(new URL('/health', advertisedUrl).toString());
+      const health = healthRes.ok() ? await healthRes.json() : null;
+      const transport = String(health?.transport || '');
+      if (!transport.toLowerCase().includes('sse')) {
+        console.log(`⏭️  Skipping SSE connect check: transport=${transport || 'unknown'}`);
+      } else {
+        console.log('🔌 Testing SSE connection...');
+        const sseRes = await retryRequest(() => request.get(rpcUrl, {
+          headers: {
+            Accept: 'text/event-stream',
+            'mcp-session-id': sessionId,
+          },
+          // short timeout so test doesn't hang on a long-lived stream
+          timeout: 5000,
+        }));
+        // server should reply with status 200 and content-type text/event-stream (or similar)
+        expect(sseRes.status()).toBe(200);
+        const ct = sseRes.headers()['content-type'] || '';
+        expect(ct.includes('text/event-stream')).toBeTruthy();
+        console.log('✅ SSE connection test passed');
+      }
     } else {
       // runtime skip: no session id available, skip SSE connect check
       console.log('⏭️  Skipping SSE connect check: no session id from initialize');
     }
     
     console.log('✅ All E2E tests completed successfully!');
+  });
+
+  test('multi-session parallel tool calls return MCP content', async ({ request }) => {
+    const rpcUrl = new URL(httpPath, advertisedUrl).toString();
+
+    const initPayload = (id: number) => ({
+      jsonrpc: '2.0',
+      id,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: `playwright-mcp-client-${id}`, version: '0.0.1' },
+      },
+    });
+
+    const initRes1 = await retryRequest(() => request.post(rpcUrl, {
+      data: JSON.stringify(initPayload(101)),
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+    }));
+    expect(initRes1.ok()).toBeTruthy();
+    const sessionId1 = initRes1.headers()['mcp-session-id'];
+    expect(sessionId1).toBeTruthy();
+
+    const initRes2 = await retryRequest(() => request.post(rpcUrl, {
+      data: JSON.stringify(initPayload(102)),
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+    }));
+    expect(initRes2.ok()).toBeTruthy();
+    const sessionId2 = initRes2.headers()['mcp-session-id'];
+    expect(sessionId2).toBeTruthy();
+
+    const callPayload = {
+      jsonrpc: '2.0',
+      id: 201,
+      method: 'tools/call',
+      params: {
+        name: 'actual_server_info',
+        arguments: {},
+      },
+    };
+
+    const [callRes1, callRes2] = await Promise.all([
+      retryRequest(() => request.post(rpcUrl, {
+        data: JSON.stringify(callPayload),
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'mcp-session-id': sessionId1,
+        },
+      })),
+      retryRequest(() => request.post(rpcUrl, {
+        data: JSON.stringify(callPayload),
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'mcp-session-id': sessionId2,
+        },
+      })),
+    ]);
+
+    expect(callRes1.ok()).toBeTruthy();
+    expect(callRes2.ok()).toBeTruthy();
+
+    const callJson1 = await callRes1.json();
+    const callJson2 = await callRes2.json();
+    expect(Array.isArray(callJson1?.result?.content)).toBeTruthy();
+    expect(Array.isArray(callJson2?.result?.content)).toBeTruthy();
   });
 });

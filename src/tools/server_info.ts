@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -53,7 +54,7 @@ Returns:
 
 Use this to check server status, verify version compatibility, or debug issues.`,
   inputSchema: InputSchema,
-  call: async (_args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (_args: unknown, _meta?: unknown) => {
     const uptime = process.uptime();
     const uptimeFormatted = `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`;
     
@@ -84,7 +85,7 @@ Use this to check server status, verify version compatibility, or debug issues.`
         total: actualToolsManager.getToolNames().length,
       },
     };
-  },
+  }),
 };
 
 export default tool;

@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
+import { getCachedAccounts, getCachedCategories, getAccountMap } from '../lib/cachedRefs.js';
 
 const InputSchema = z.object({
   minAmount: z.number().optional().describe('Minimum amount in cents (use negative for expenses, e.g., -10000 for $-100.00). For expenses, use negative values (e.g., -5000 for -$50.00)'),
@@ -27,20 +29,19 @@ const tool: ToolDefinition = {
   name: 'actual_transactions_search_by_amount',
   description: 'Search transactions by amount. Supports two modes: (1) Signed amount range using minAmount/maxAmount (expenses are negative, e.g., -5000 for -$50), or (2) Absolute value using absoluteAmount to find any transaction with that magnitude regardless of sign (e.g., absoluteAmount=5000 matches both +$50 income and -$50 expense). When user says "amount 50", use absoluteAmount=5000 to match both income and expenses.',
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
-    
+
     // Validate accountId exists if provided
     if (input.accountId) {
-      const accounts = await adapter.getAccounts();
+      const accounts = await getCachedAccounts();
       const accountExists = accounts.some((acc: any) => acc.id === input.accountId);
-      
+
       if (!accountExists) {
-        // Check if user provided account name instead of UUID
-        const accountByName = accounts.find((acc: any) => 
+        const accountByName = accounts.find((acc: any) =>
           acc.name && acc.name.toLowerCase() === input.accountId!.toLowerCase()
         );
-        
+
         if (accountByName) {
           return {
             transactions: [],
@@ -53,7 +54,7 @@ const tool: ToolDefinition = {
             error: `Account '${input.accountId}' appears to be a name, not an ID. Use account UUID '${accountByName.id}' instead.`,
           };
         }
-        
+
         return {
           transactions: [],
           count: 0,
@@ -66,14 +67,14 @@ const tool: ToolDefinition = {
         };
       }
     }
-    
-    // Get base transactions (filtered by account and date range if provided)
+
+    // Get transactions (not cached — unique per date/account)
     const allTransactions = await adapter.getTransactions(
       input.accountId,
       input.startDate,
       input.endDate
     );
-    
+
     if (!Array.isArray(allTransactions)) {
       return {
         transactions: [],
@@ -85,16 +86,13 @@ const tool: ToolDefinition = {
         },
       };
     }
-    
-    // Apply JavaScript filters
+
     let filtered = allTransactions;
-    
-    // Filter by absolute amount (if specified, this takes precedence)
+
     if (input.absoluteAmount !== undefined) {
       const targetAbs = Math.abs(input.absoluteAmount);
       filtered = filtered.filter((t: any) => Math.abs(t.amount || 0) === targetAbs);
     } else {
-      // Filter by signed amount range
       if (input.minAmount !== undefined) {
         filtered = filtered.filter((t: any) => (t.amount || 0) >= input.minAmount!);
       }
@@ -102,17 +100,16 @@ const tool: ToolDefinition = {
         filtered = filtered.filter((t: any) => (t.amount || 0) <= input.maxAmount!);
       }
     }
-    
-    // Filter by category name (need to lookup category ID)
+
+    // Filter by category name (cached lookup)
     if (input.categoryName) {
-      const categories = await adapter.getCategories();
+      const categories = await getCachedCategories();
       const category = categories.find((c: any) =>
         c.name && c.name.toLowerCase() === input.categoryName!.toLowerCase()
       );
       if (category) {
         filtered = filtered.filter((t: any) => t.category === category.id);
       } else {
-        // Category not found - return empty
         return {
           transactions: [],
           count: 0,
@@ -125,37 +122,34 @@ const tool: ToolDefinition = {
         };
       }
     }
-    
-    // Sort by amount descending and apply limit
+
     filtered.sort((a: any, b: any) => {
       const amountA = a.amount || 0;
       const amountB = b.amount || 0;
       return amountB - amountA;
     });
-    
+
     const limited = filtered.slice(0, input.limit || 100);
-    
-    // Enrich transactions with account names
-    const accounts = await adapter.getAccounts();
-    const accountMap = new Map(accounts.map((acc: any) => [acc.id, acc.name]));
-    
+
+    // Enrich with cached account names
+    const accountMap = await getAccountMap();
+
     const enrichedTransactions = limited.map((t: any) => ({
       ...t,
       accountName: accountMap.get(t.account) || t.account,
     }));
-    
-    // Calculate summary stats
+
     const totalAmount = limited.reduce((sum: number, t: any) => sum + (t.amount || 0), 0);
-    
+
     return {
       transactions: enrichedTransactions,
       count: enrichedTransactions.length,
       totalAmount,
-      amountRange: input.absoluteAmount !== undefined 
+      amountRange: input.absoluteAmount !== undefined
         ? { absolute: input.absoluteAmount }
         : { min: input.minAmount, max: input.maxAmount },
     };
-  },
+  }),
 };
 
 export default tool;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 
@@ -21,7 +22,7 @@ const tool: ToolDefinition = {
   name: 'actual_transactions_filter',
   description: 'Get transactions with advanced filtering. Supports filtering by amount range, category, payee, notes, and status. Returns filtered transactions matching all specified criteria.',
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
     
     // Convert null to undefined for adapter (LibreChat sends null, adapter expects undefined)
@@ -76,7 +77,7 @@ const tool: ToolDefinition = {
     }
     
     return { result: filtered };
-  },
+  }),
 };
 
 export default tool;

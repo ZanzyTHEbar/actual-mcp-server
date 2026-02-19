@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 
@@ -12,19 +13,19 @@ const tool: ToolDefinition = {
   name: 'actual_query_run',
   description: `Execute SQL queries for advanced financial data analysis.
 
-**RECOMMENDED: Use SQL syntax** - Most reliable and well-tested format.
+**RECOMMENDED: Use SQL syntax** — most reliable and well-tested format.
 
-Usage note: call actual_budgets_getMonth first to open the budget and avoid parallel summary/query calls.
+PREREQUISITE: Call actual_budgets_getMonth first to open the budget. Run queries sequentially, not in parallel.
 
 SQL SYNTAX (Preferred):
   SELECT [fields] FROM [table] WHERE [conditions] ORDER BY [field] DESC LIMIT [n]
-  
+
   Examples:
   • "SELECT * FROM transactions ORDER BY date DESC LIMIT 5"
   • "SELECT id, date, amount, payee.name FROM transactions WHERE amount < 0 LIMIT 10"
   • "SELECT id, date, amount, category.name FROM transactions WHERE date >= '2025-01-01'"
 
-IMPORTANT - Field Names:
+IMPORTANT — Field Names:
   • Use payee.name (NOT payee_name) for payee names
   • Use category.name (NOT category_name) for category names
   • Use account.name (NOT account_name) for account names
@@ -39,6 +40,15 @@ Available Tables:
   • payees: id, name
   • category_groups: id, name, is_income
 
+⚠️  KNOWN LIMITATIONS — ActualQL does NOT support:
+  • Aggregate functions: SUM(), COUNT(), AVG(), MIN(), MAX() — queries with these will fail or return unexpected results.
+  • GROUP BY — no native grouping. For grouped summaries use actual_transactions_summary_by_category or actual_transactions_summary_by_payee instead.
+  • DISTINCT on joined fields — "SELECT DISTINCT payee.name" will fail. Fetch raw rows and deduplicate client-side, or use actual_payees_get.
+  • category IS NULL — returns rows with a category.name field present but empty, which is confusing. Use actual_transactions_uncategorized for reliable null-category filtering.
+  • Complex subqueries or HAVING clauses.
+
+  If you need aggregation (totals per category, spending per payee, etc.), use the dedicated summary tools instead of raw queries.
+
 Common Queries:
   • Last 5 transactions: "SELECT * FROM transactions ORDER BY date DESC LIMIT 5"
   • By category: "SELECT id, date, amount, payee.name FROM transactions WHERE category.name = 'Food' LIMIT 10"
@@ -52,26 +62,26 @@ Alternative Formats:
 
 For details: https://actualbudget.org/docs/api/actual-ql/`,
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     try {
       const input = InputSchema.parse(args || {});
-      
+
       // Detect and reject GraphQL-like syntax with nested objects
       if (input.query.trim().startsWith('query ') && input.query.includes('{') && input.query.includes('}')) {
         throw new Error(`GraphQL syntax is not fully supported. Please use SQL instead.\n\nExample: SELECT id, date, amount, payee.name, category.name FROM transactions ORDER BY date DESC LIMIT 5\n\nYour query attempted: ${input.query.substring(0, 100)}...`);
       }
-      
+
       const result = await adapter.runQuery(input.query);
       return { result };
     } catch (error: any) {
       // Provide helpful error messages
       const errorMessage = error?.message || String(error);
-      
+
       // Check if error is about payee_name, category_name, account_name
       if (errorMessage.includes('payee_name') || errorMessage.includes('category_name') || errorMessage.includes('account_name')) {
         throw new Error(`Field name error: Use dot notation for joins.\n• Use payee.name (NOT payee_name)\n• Use category.name (NOT category_name)\n• Use account.name (NOT account_name)\n\nExample: SELECT id, date, amount, payee.name FROM transactions LIMIT 5\n\nOriginal error: ${errorMessage}`);
       }
-      
+
       if (errorMessage.includes('does not exist in the schema')) {
         throw new Error(`Invalid table or field name. Available tables: transactions, accounts, categories, payees, category_groups, schedules, rules. Use dot notation for joins (e.g., category.name). Original error: ${errorMessage}`);
       } else if (errorMessage.includes('ActualQL query builder not available')) {
@@ -82,7 +92,7 @@ For details: https://actualbudget.org/docs/api/actual-ql/`,
         throw new Error(`Query execution failed: ${errorMessage}`);
       }
     }
-  },
+  }),
 };
 
 export default tool;

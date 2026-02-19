@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 
@@ -56,7 +57,7 @@ Action operators: 'set', 'set-split-amount', 'link-schedule', 'append-notes'.
 
 Do not include the rule ID in the fields object - it is provided separately.`,
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
     
     // Validate action field values
@@ -149,7 +150,7 @@ Do not include the rule ID in the fields object - it is provided separately.`,
     
     await adapter.updateRule(input.id, fields);
     return { success: true };
-  },
+  }),
 };
 
 export default tool;

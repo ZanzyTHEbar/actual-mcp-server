@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 import { CommonSchemas } from '../lib/schemas/common.js';
@@ -21,7 +22,7 @@ const tool: ToolDefinition = {
   name: 'actual_transactions_create',
   description: 'Create a new transaction in Actual Budget. Amount should be in cents (negative for expenses, positive for income).',
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
     
     try {
@@ -44,7 +45,7 @@ const tool: ToolDefinition = {
     } catch (error) {
       throw new Error(`Failed to create transaction: ${error instanceof Error ? error.message : String(error)}`);
     }
-  },
+  }),
 };
 
 export default tool;

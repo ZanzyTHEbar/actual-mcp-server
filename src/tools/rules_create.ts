@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 
@@ -60,7 +61,7 @@ Action operators: 'set', 'set-split-amount', 'link-schedule', 'append-notes'.
 
 Example: {stage: "post", conditionsOp: "and", conditions: [{field: "imported_payee", op: "contains", value: "Amazon"}], actions: [{op: "set", field: "category", value: "category-uuid"}]}`,
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     try {
       const input = InputSchema.parse(args || {});
       
@@ -157,7 +158,7 @@ Example: {stage: "post", conditionsOp: "and", conditions: [{field: "imported_pay
       }
       throw error;
     }
-  },
+  }),
 };
 
 export default tool;

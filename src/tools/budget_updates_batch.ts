@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 import { 
@@ -36,7 +37,7 @@ Example: Set health insurance budget for 12 months:
   ]
 }`,
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
     
     // Validate operation count
@@ -81,7 +82,7 @@ Example: Set health insurance budget for 12 months:
       failed: results.failed,
       errors: results.errors.length > 0 ? results.errors.slice(0, 5) : undefined, // Return first 5 errors
     };
-  },
+  }),
 };
 
 export default tool;

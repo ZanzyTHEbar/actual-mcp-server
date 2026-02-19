@@ -2,6 +2,7 @@
 import * as ActualApi from '@actual-app/api';
 import logger from './logger.js';
 import { z } from 'zod';
+import { invalidateAfterWrite, isWriteTool } from './lib/search/CacheInvalidator.js';
 
 import type { ZodTypeAny } from 'zod';
 import type { ToolDefinition } from '../types/tool.d.js';
@@ -42,6 +43,7 @@ const IMPLEMENTED_TOOLS = [
   'actual_payee_rules_get',
   'actual_query_run',
   'actual_rules_create',
+  'actual_rules_create_or_update',
   'actual_rules_delete',
   'actual_rules_get',
   'actual_rules_update',
@@ -56,10 +58,15 @@ const IMPLEMENTED_TOOLS = [
   'actual_transactions_search_by_payee',
   'actual_transactions_summary_by_category',
   'actual_transactions_summary_by_payee',
+  'actual_transactions_uncategorized',
   'actual_transactions_update',
+  'actual_transactions_update_batch',
+  'actual_hybrid_search',
   'actual_server_info',
   'actual_session_close',
   'actual_session_list',
+  'actual_tool_registry',
+  'actual_tool_call',
 ];
 
 // 🔑 Mapping of Actual API function names → your MCP tool names
@@ -125,7 +132,7 @@ const GetAccountBalanceInputSchema = z.object({
 class ActualToolsManager {
   private tools: Map<string, ToolDefinition> = new Map();
 
-  constructor() {}
+  constructor() { }
 
   async initialize() {
     // Dynamically import all tool modules from src/tools/index.ts
@@ -141,8 +148,17 @@ class ActualToolsManager {
     logger.info(`🔗 Loaded ${count} tool modules from src/tools`);
   }
 
+  /** Names of tools that are exposed directly via MCP (the meta/gateway tools). */
+  static readonly META_TOOLS = ['actual_tool_registry', 'actual_tool_call'];
+
+  /** Return names of ALL registered tools (internal + meta). */
   getToolNames(): string[] {
     return Array.from(this.tools.keys());
+  }
+
+  /** Return only the meta-tool names exposed via MCP's tools/list. */
+  getExposedToolNames(): string[] {
+    return ActualToolsManager.META_TOOLS.filter((n) => this.tools.has(n));
   }
 
   getTool(name: string): ToolDefinition | undefined {
@@ -153,15 +169,19 @@ class ActualToolsManager {
     const tool = this.getTool(name);
     if (!tool) throw new Error(`Tool not found: ${name}`);
     try {
-      const result = await tool.call(args);
+      const callResult = await tool.call(args);
+      if (callResult && typeof callResult === 'object' && 'content' in callResult) {
+        const content = (callResult as { content?: unknown[] }).content;
+        const count = Array.isArray(content) ? content.length : 0;
+        logger.info(`[TOOL RESULT] ${name}: contentItems=${count}`);
+      }
 
-      // Force-serialize/deserialize to ensure result is JSON-safe (no circular refs,
-      // Buffers, class instances, etc). Convert undefined -> null so callers always
-      // receive a valid JSON value.
-      const safe = result === undefined ? null : JSON.parse(JSON.stringify(result));
+      // Invalidate cache entries after successful write operations
+      if (isWriteTool(name)) {
+        invalidateAfterWrite(name);
+      }
 
-      logger.info(`[TOOL RESULT] ${name}: ${JSON.stringify(safe)}`);
-      return safe;
+      return callResult;
     } catch (err: unknown) {
       // Format Zod validation errors more clearly
       if (err && typeof err === 'object' && 'issues' in err) {
@@ -174,7 +194,7 @@ class ActualToolsManager {
         logger.error(`[TOOL ERROR] ${name}: ${formattedMsg}`);
         throw new Error(formattedMsg);
       }
-      
+
       const e = err as Error | { message?: unknown } | undefined;
       const msg = e && typeof e.message === 'string' ? e.message : String(err);
       logger.error(`[TOOL ERROR] ${name}: ${msg}`);
@@ -189,10 +209,10 @@ class ActualToolsManager {
     const apiMethods = Object.keys(API_TOOL_MAP);
     const mappedTools = Object.values(API_TOOL_MAP);
     const implemented = IMPLEMENTED_TOOLS;
-    
+
     const missing = mappedTools.filter(tool => !implemented.includes(tool));
     const coverage = (implemented.length / mappedTools.length) * 100;
-    
+
     return {
       totalApiMethods: apiMethods.length,
       totalMappedTools: mappedTools.length,

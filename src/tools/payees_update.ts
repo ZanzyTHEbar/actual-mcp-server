@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { wrapToolCall } from '../lib/wrapToolCall.js';
 import { CommonSchemas } from '../lib/schemas/common.js';
 import type { components } from '../../generated/actual-client/types.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
@@ -38,7 +39,7 @@ Example: Mark payee as transfer account:
   }
 }`,
   inputSchema: InputSchema,
-  call: async (args: unknown, _meta?: unknown) => {
+  call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     try {
       const input = InputSchema.parse(args || {});
       
@@ -60,7 +61,7 @@ Example: Mark payee as transfer account:
       }
       throw error;
     }
-  },
+  }),
 };
 
 export default tool;
