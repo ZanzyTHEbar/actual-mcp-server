@@ -114,16 +114,16 @@ export async function startSseServer(
         const schemaFromParam = toolSchemas && toolSchemas[name];
         const schemaFromManager = (actualToolsManager as unknown as { getToolSchema?: (n: string) => unknown })?.getToolSchema?.(name);
         const schema = schemaFromParam || schemaFromManager;
-        
+
         // Ensure inputSchema is a valid JSON Schema object with required properties
         const inputSchema = schema && typeof schema === 'object' && Object.keys(schema).length > 0
           ? schema
           : { type: 'object', properties: {}, additionalProperties: false };
-        
+
         // Get the actual tool definition to extract the real description
         const tool = actualToolsManager.getTool(name);
         const description = tool?.description || `Tool ${name}`;
-        
+
         return {
           name,
           description,
@@ -194,12 +194,12 @@ export async function startSseServer(
   // SSE endpoint for establishing the stream
   app.get(ssePath, async (req: Request, res: Response) => {
     const clientIp = req.ip || req.connection.remoteAddress || 'unknown IP';
-    
+
     // Authenticate the request
     if (!authenticateRequest(req, res)) {
       return;
     }
-    
+
     logger.info(`⚡ SSE client connected from ${clientIp}`);
 
     try {
@@ -212,13 +212,13 @@ export async function startSseServer(
       // Create SSE transport - the POST endpoint will be ssePath (same path)
       const transport = new SSEServerTransport(ssePath, res);
       const sessionId = transport.sessionId;
-      
+
       const initIdentity = getIdentityFromLocals(res);
       if (initIdentity) {
         sessionIdentities.set(sessionId, initIdentity);
         logger.info(`[SSE] Bound identity ${initIdentity.userId} to session ${sessionId}`);
       }
-      
+
       transports[sessionId] = transport;
 
       await sessionWorkerManager.createSession(sessionId);
@@ -246,7 +246,7 @@ export async function startSseServer(
       // Create and connect MCP server
       const mcpServer = createMcpServer(sessionId);
       await mcpServer.connect(transport);
-      
+
       logger.info(`[SSE] MCP server connected for client ${clientIp} (session: ${sessionId})`);
     } catch (error) {
       logger.error(`[SSE] Error establishing connection from ${clientIp}:`, error);
@@ -260,7 +260,7 @@ export async function startSseServer(
     if (!authenticateRequest(req, res)) {
       return;
     }
-    
+
     // Return 200 OK with appropriate headers
     res.status(200).end();
   });
@@ -268,14 +268,14 @@ export async function startSseServer(
   // POST endpoint for receiving client messages
   app.post(ssePath, async (req: Request, res: Response) => {
     const clientIp = req.ip || req.connection.remoteAddress || 'unknown IP';
-    
+
     // Authenticate the request
     if (!authenticateRequest(req, res)) {
       return;
     }
-    
+
     const sessionId = req.query.sessionId as string;
-    
+
     if (!sessionId) {
       logger.warn(`[SSE] POST without sessionId from ${clientIp}`);
       res.status(400).json({ error: 'Missing sessionId query parameter' });
@@ -300,7 +300,7 @@ export async function startSseServer(
     }
 
     logger.debug(`[SSE] Received POST for session ${sessionId} from ${clientIp}`);
-    
+
     try {
       await requestContext.run({ sessionId, identity: reqIdentity }, async () => {
         await transport.handlePostMessage(req, res, req.body);
