@@ -3,7 +3,7 @@
 **Project:** Actual MCP Server  
 **Version:** 0.4.7  
 **Purpose:** Future improvements and feature planning  
-**Last Updated:** 2026-01-07
+**Last Updated:** 2026-02-13
 
 ---
 
@@ -22,6 +22,7 @@ Transform the Actual MCP Server from a **functional bridge** into a **production
 - ✅ **Production-ready** - Docker images, CI/CD, HTTPS
 - ✅ **Security-conscious** - Bearer auth, input validation, 0 vulnerabilities
 - ✅ **Well-documented** - Comprehensive documentation ecosystem
+- ✅ **Search & caching** - Hybrid search (FTS5 + vector + RRF), in-memory LRU cache, embedding abstraction
 
 ### Target State (v1.0.0)
 
@@ -422,7 +423,7 @@ throw new Error(
 **Target**: v0.3.0 (January 2026)
 
 **Features**:
-- [ ] Add caching layer for read-heavy operations
+- [x] Add caching layer for read-heavy operations (LRU, TTL, tag-based invalidation, SWR)
 - [ ] Optimize transaction filtering
 - [ ] Implement connection pooling
 - [ ] Add pagination for large result sets
@@ -498,10 +499,24 @@ throw new Error(
 **Target**: v0.4.0 (March 2026)
 
 **Features**:
-- [ ] Full-text search across transactions
+- [x] Full-text search across transactions (hybrid: FTS5 + vector + metadata + RRF fusion)
+- [x] In-memory response caching (LRU, TTL, tag-based invalidation, SWR coalescing)
+- [x] Embedding provider abstraction (HuggingFace local, Ollama, OpenAI-compatible)
+- [x] Incremental sync with content hashing
+- [x] Background embedding model warm-up
+- [x] Search tools: `actual_hybrid_search`, `actual_search_similar`, `actual_search_index_info`
+- [x] Graceful degradation for cache and search components
 - [ ] Natural language date ranges ("last month", "Q1 2025")
 - [ ] Fuzzy payee matching
 - [ ] Smart category suggestions
+
+**Planned / Upcoming**:
+- SQLC integration for type-safe SQL queries
+- Advanced retrieval (late chunking, LEANN pruning, cross-encoder re-ranking, Matryoshka embeddings)
+- Embedding cache (text→vector dedup)
+- Query expansion with financial domain synonyms
+- Adaptive search mode selection
+- Connection pooling for concurrent search queries
 
 **Impact**: Better user experience for large datasets
 

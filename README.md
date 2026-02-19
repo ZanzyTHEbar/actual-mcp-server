@@ -9,9 +9,9 @@
 [![GitHub Actions CI](https://github.com/agigante80/actual-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/agigante80/actual-mcp-server/actions)
 [![GitHub stars](https://img.shields.io/github/stars/agigante80/actual-mcp-server?style=social)](https://github.com/agigante80/actual-mcp-server)
 
-A production-ready **Model Context Protocol (MCP)** server that bridges AI assistants with [Actual Budget](https://actualbudget.org/), enabling natural language financial management through **51 specialized tools** covering 82% of the Actual Budget API, including **6 exclusive ActualQL-powered tools** designed specifically for this MCP server.
+A production-ready **Model Context Protocol (MCP)** server that bridges AI assistants with [Actual Budget](https://actualbudget.org/), enabling natural language financial management through **54 specialized tools** covering over 80% of the Actual Budget API, including **6 advanced analysis tools** designed specifically for this MCP server.
 
-> **🧪 Tested with Multiple AI Clients**: This MCP server has been extensively tested and verified with both [LibreChat](https://www.librechat.ai/) and [LobeChat](https://lobehub.com/home). All 51 tools load and function correctly. Other MCP clients should work but have not been tested yet.
+> **🧪 Tested with Multiple AI Clients**: This MCP server has been extensively tested and verified with both [LibreChat](https://www.librechat.ai/) and [LobeChat](https://lobehub.com/home). All 54 tools load and function correctly. Other MCP clients should work but have not been tested yet.
 
 ---
 
@@ -173,19 +173,20 @@ Both containers must be on the same Docker network. See [Docker Deployment](#-do
 ### Core Capabilities
 ### Core Capabilities
 
-- 🤖 **51 MCP Tools**: Comprehensive financial operations via natural language
+- 🤖 **54 MCP Tools**: Comprehensive financial operations via natural language
 - 🔄 **Multiple Transports**: HTTP and Server-Sent Events (SSE)
 - 🔐 **Secure**: Bearer token authentication + HTTPS/TLS encryption
 - 🛡️ **Type-Safe**: Full TypeScript implementation with runtime validation (Zod)
 - 🔁 **Resilient**: Automatic retry logic with exponential backoff
 - 📊 **82% API Coverage**: Supports majority of Actual Budget operations
 - 🚀 **Production-Ready**: Docker support, structured logging, health checks
-- ✅ **LibreChat Verified**: All 51 tools tested and working
+- ✅ **LibreChat Verified**: All 54 tools tested and working
 - ⚡ **Exclusive Tools**: 6 ActualQL-powered tools for advanced queries and summaries
 
 ### Advanced Features
 
 - **Concurrent Control**: Rate-limited API calls prevent overwhelming Actual Budget
+- **Isolated Sessions**: Each MCP session runs in its own worker for true parallelism
 - **Observability**: Prometheus metrics, structured logging with Winston
 - **Flexible Deployment**: Docker, Kubernetes, bare metal, or Docker Compose
 - **HTTPS Support**: TLS encryption with self-signed or CA-signed certificates
@@ -219,7 +220,7 @@ With conversational AI, you can:
 
 **This project MUST use Zod 3.x (3.25.76).** Do NOT upgrade to Zod 4.x!
 
-Zod 4.x has breaking internal changes that cause `zod-to-json-schema` to produce incomplete schemas, breaking LibreChat tool validation. All 51 tools become invisible if Zod 4.x is used.
+Zod 4.x has breaking internal changes that cause `zod-to-json-schema` to produce incomplete schemas, breaking LibreChat tool validation. All 54 tools become invisible if Zod 4.x is used.
 
 - **Reject any Dependabot/Renovate PRs** suggesting Zod 4.x
 - The project includes safeguards: `package.json` overrides and Dockerfile post-install
@@ -370,9 +371,26 @@ docker compose --profile fullstack --profile dev up
 
 ## 🛠️ Available Tools
 
-The MCP server exposes **51 tools** organized into 10 categories. All tools follow the naming convention `actual_<category>_<action>`.
+### Progressive Disclosure Architecture
 
-> **⚡ Exclusive ActualQL Tools**: This MCP server includes 6 specialized tools powered by ActualQL that are **unique to this implementation** and not available in standard Actual Budget integrations. These tools provide advanced querying, aggregation, and analysis capabilities.
+The MCP server uses **Progressive Disclosure** — only **2 meta-tools** are exposed via MCP's `tools/list`:
+
+| Meta-Tool | Purpose |
+|-----------|---------|
+| `actual_tool_registry` | Discover all available tools with descriptions and input schemas |
+| `actual_tool_call` | Execute any tool by name with arguments |
+
+This design keeps the MCP tool surface minimal while providing access to all **54 internal tools** through the dispatcher. AI clients discover tools on-demand via the registry, then invoke them through `actual_tool_call`.
+
+**Workflow:**
+1. Call `actual_tool_registry` (optionally with `category: "transactions"`) to discover tools
+2. Call `actual_tool_call` with `{ toolName: "actual_transactions_get", arguments: { ... } }`
+
+> **⚡ Advanced Analysis Tools**: This MCP server includes specialized tools for search and rollups that go beyond standard CRUD capabilities.
+
+### Internal Tool Catalog
+
+The following **54 tools** are available via the `actual_tool_call` dispatcher, organized into 10 categories. All tools follow the naming convention `actual_<category>_<action>`.
 
 ### Accounts (7 tools)
 
@@ -386,9 +404,9 @@ The MCP server exposes **51 tools** organized into 10 categories. All tools foll
 | `actual_accounts_reopen` | Reopen closed account | `id` |
 | `actual_accounts_get_balance` | Get account balance at date | `id`, `cutoff?` |
 
-### Transactions (12 tools)
+### Transactions (14 tools)
 
-**Basic Operations (6 tools)**
+**Basic Operations (8 tools)**
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
@@ -397,9 +415,11 @@ The MCP server exposes **51 tools** organized into 10 categories. All tools foll
 | `actual_transactions_create` | Create new transaction(s) | `accountId`, `date`, `amount`, `payee?`, `category?`, `notes?` |
 | `actual_transactions_import` | Import and reconcile transactions | `accountId`, `transactions[]` |
 | `actual_transactions_update` | Update transaction | `id`, `amount?`, `payee?`, `category?`, `notes?`, `date?` |
+| `actual_transactions_update_batch` | Batch update up to 100 transactions | `updates[{id, fields}]` |
 | `actual_transactions_delete` | Delete transaction | `id` |
+| `actual_transactions_uncategorized` | List uncategorized transactions with summary | `startDate?`, `endDate?`, `accountId?`, `limit?` |
 
-**⚡ Exclusive ActualQL-Powered Tools (6 tools)** - *Only available in this MCP server*
+**Advanced Analysis Tools (6 tools)**
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
@@ -407,10 +427,10 @@ The MCP server exposes **51 tools** organized into 10 categories. All tools foll
 | `actual_transactions_search_by_amount` | Find transactions by amount range | `minAmount?`, `maxAmount?`, `startDate?`, `endDate?`, `accountId?`, `categoryName?`, `limit?` |
 | `actual_transactions_search_by_category` | Search transactions by category name | `categoryName?`, `startDate?`, `endDate?`, `accountId?`, `minAmount?`, `maxAmount?`, `limit?` |
 | `actual_transactions_search_by_payee` | Find transactions by payee/vendor | `payeeName?`, `startDate?`, `endDate?`, `accountId?`, `categoryName?`, `minAmount?`, `maxAmount?`, `limit?` |
-| `actual_transactions_summary_by_category` | Get spending summary grouped by category with aggregation | `startDate?` (defaults to month start), `endDate?` (defaults to today), `accountId?`, `includeIncome?` |
+| `actual_transactions_summary_by_category` | Get spending summary grouped by category | `startDate?` (defaults to month start), `endDate?` (defaults to today), `accountId?`, `includeIncome?` |
 | `actual_transactions_summary_by_payee` | Analyze top vendors/merchants with totals and counts | `startDate?` (defaults to month start), `endDate?` (defaults to today), `accountId?`, `limit?` |
 
-These exclusive tools use ActualQL's advanced features like `$transform`, `groupBy`, `$sum`, and `$count` for efficient queries and aggregations that go beyond standard API capabilities.
+These tools provide convenient search and rollup workflows without requiring manual exports.
 
 ### Categories (4 tools)
 
@@ -454,12 +474,13 @@ These exclusive tools use ActualQL's advanced features like `$transform`, `group
 | `actual_budgets_holdForNextMonth` | Hold funds for next month | `month`, `categoryId` |
 | `actual_budgets_resetHold` | Reset hold status | `month`, `categoryId` |
 
-### Rules (4 tools)
+### Rules (5 tools)
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `actual_rules_get` | List all rules | - |
 | `actual_rules_create` | Create transaction rule | `conditions`, `actions` |
+| `actual_rules_create_or_update` | Create or update rule (dedup by conditions) | `conditions`, `actions` |
 | `actual_rules_update` | Update rule | `id`, `conditions?`, `actions?` |
 | `actual_rules_delete` | Delete rule | `id` |
 
@@ -489,7 +510,7 @@ These exclusive tools use ActualQL's advanced features like `$transform`, `group
 | `actual_session_list` | List all active MCP sessions | - |
 | `actual_session_close` | Close a specific MCP session | `sessionId` |
 
-**Total: 51 tools across 11 categories** (including 6 exclusive ActualQL-powered tools)
+**Total: 54 tools across 11 categories** (including 6 advanced analysis tools)
 
 ---
 
@@ -513,7 +534,7 @@ These methods require access to Actual's internal API and are not directly expor
 ### Lookup Helper
 - `getIDByName()` - Look up IDs by name for accounts/payees/categories/schedules
 
-**Note**: Most core financial operations (accounts, transactions, budgets, categories, payees, rules) are fully implemented with 51 tools. The missing features represent specialized workflows requiring deeper API integration. Contributions welcome!
+**Note**: Most core financial operations (accounts, transactions, budgets, categories, payees, rules) are fully implemented with 54 tools. The missing features represent specialized workflows requiring deeper API integration. Contributions welcome!
 
 ## 📦 Installation
 
@@ -585,7 +606,7 @@ docker compose --profile production up -d
 
 ## 💬 AI Client Integration (LibreChat & LobeChat)
 
-This MCP server has been tested and verified with both [LibreChat](https://www.librechat.ai/) and [LobeChat](https://lobehub.com/home). All 51 tools work correctly with both clients.
+This MCP server has been tested and verified with both [LibreChat](https://www.librechat.ai/) and [LobeChat](https://lobehub.com/home). All 54 tools work correctly with both clients.
 
 ### Quick Setup (Docker Environment)
 
@@ -646,7 +667,7 @@ In LobeChat UI:
    - **Authorization**: `Bearer YOUR_TOKEN_HERE`
 4. Click **Save**
 
-LobeChat will automatically discover all 51 tools.
+LobeChat will automatically discover all 54 tools.
 
 ### Network Configuration
 
@@ -806,11 +827,11 @@ curl -k https://localhost:3600/health
 ```
 
 In your AI client, you should see:
-- ✅ **51 tools loaded** in the MCP servers list
+- ✅ **54 tools loaded** in the MCP servers list
 - ✅ All tools available with `actual_` prefix
 - ✅ Natural language queries working
 
-**Note**: Tool count updated from 49 to 51 to reflect current implementation.
+**Note**: Tool count updated from 49 to 52 to reflect current implementation.
 
 ---
 
@@ -887,7 +908,7 @@ curl -X POST http://localhost:3000/http \
 4. AI client calls appropriate tools (`actual_accounts_list`, `actual_accounts_get_balance`)
 5. You get conversational responses: "Your checking account balance is $1,234.56"
 
-Both LibreChat and LobeChat work identically - all 51 tools are available for conversational financial management.
+Both LibreChat and LobeChat work identically - all 54 tools are available for conversational financial management.
 
 ---
 
@@ -920,8 +941,9 @@ All configuration is managed via environment variables. See [`.env.example`](.en
 | `MCP_HTTP_PATH` | `/http` | ❌ No | HTTP endpoint path |
 | **Session Management** ||||
 | `USE_CONNECTION_POOL` | `true` | ❌ No | Enable session-based connection pooling |
-| `MAX_CONCURRENT_SESSIONS` | `15` | ❌ No | Maximum concurrent MCP sessions allowed |
-| `SESSION_IDLE_TIMEOUT_MINUTES` | `5` (pool)<br/>`2` (HTTP) | ❌ No | Minutes before idle session cleanup |
+| `MAX_CONCURRENT_SESSIONS` | `5` | ❌ No | Maximum concurrent MCP sessions (isolated worker per session) |
+| `SESSION_IDLE_TIMEOUT_MINUTES` | `10` | ❌ No | Minutes before idle session cleanup |
+| `MCP_SESSION_CACHE_CLEANUP` | `true` | ❌ No | Delete per-session cache dirs on close (set false to retain) |
 | **Security & Authentication** ||||
 | `MCP_SSE_AUTHORIZATION` | - | ❌ No | Bearer token for authentication (highly recommended) |
 | `MCP_ENABLE_HTTPS` | `false` | ❌ No | Enable HTTPS/TLS encryption |
@@ -986,6 +1008,7 @@ MCP_BRIDGE_LOG_LEVEL=info
 # Session Management
 MAX_CONCURRENT_SESSIONS=15
 SESSION_IDLE_TIMEOUT_MINUTES=5
+MCP_SESSION_CACHE_CLEANUP=true
 ```
 
 **Docker-specific settings:**
@@ -999,7 +1022,31 @@ Docker images use these defaults (can be overridden):
 
 ## 🔌 Transports & Authentication
 
-The MCP server supports **two transport protocols** with optional Bearer token authentication.
+The MCP server supports **two transport protocols** with flexible authentication options: simple Bearer token, OIDC (OpenID Connect), or LDAP.
+
+### Multi-User Authentication (NEW)
+
+For multi-user deployments, configure `AUTH_PROVIDER` to enable OIDC or LDAP authentication:
+
+```bash
+# OIDC (Keycloak, Auth0, Okta, Azure AD, Google)
+AUTH_PROVIDER=oidc
+OIDC_ISSUER=https://auth.example.com/realms/myapp
+OIDC_CLIENT_ID=actual-mcp-server
+OIDC_AUDIENCE=actual-mcp-server
+
+# LDAP (Active Directory, OpenLDAP)
+AUTH_PROVIDER=ldap
+LDAP_URL=ldap://ldap.example.com:389
+LDAP_BIND_DN=cn=admin,dc=example,dc=com
+LDAP_BIND_PASSWORD=admin-password
+LDAP_SEARCH_BASE=ou=users,dc=example,dc=com
+
+# Per-user budget access control (optional)
+AUTH_BUDGET_ACL={"alice@example.com": ["budget-sync-1"], "group:admin": ["*"]}
+```
+
+When auth is enabled, each MCP session is bound to the authenticated user identity. See [.env.example](.env.example) for all configuration options.
 
 > **Docker Note**: When running in Docker, HTTP transport is the default. Override with `MCP_TRANSPORT_MODE` environment variable (`--http` or `--sse`). For local development, specify the transport mode using command-line flags.
 
@@ -1038,7 +1085,7 @@ mcpServers:
 **Features:**
 - ✅ Full MCP protocol support via `@modelcontextprotocol/sdk`
 - ✅ Bearer token authentication via headers
-- ✅ All 51 tools load successfully in LibreChat
+- ✅ All 54 tools load successfully in LibreChat
 - ✅ Session management with `MCP-Session-Id` headers
 - ✅ Production-ready and tested
 
@@ -1120,9 +1167,9 @@ Comprehensive testing completed with LibreChat:
 
 | Test Case | Result | Tools Loaded |
 |-----------|--------|--------------|
-| HTTP without auth | ✅ Success | 51 tools |
-| HTTP with auth | ✅ Success | 51 tools |
-| SSE without auth | ✅ Success | 51 tools |
+| HTTP without auth | ✅ Success | 54 tools |
+| HTTP with auth | ✅ Success | 54 tools |
+| SSE without auth | ✅ Success | 54 tools |
 | SSE with auth | ⚠️ Client limitation | 0 tools (headers not sent) |
 
 **Conclusion:** Use **HTTP transport with Bearer token authentication** for secure production LibreChat deployments.
@@ -1182,7 +1229,7 @@ See [`docs/deployment.md`](docs/deployment.md) for Kubernetes manifests with:
 ```
 ┌──────────────┐         ┌──────────────┐         ┌─────────────┐
 │   LibreChat  │   MCP   │  MCP Server  │   REST  │   Actual    │
-│  (AI Client) │◄────────┤  (51 Tools)  │◄────────┤   Budget    │
+│  (AI Client) │◄────────┤  (52 Tools)  │◄────────┤   Budget    │
 │              │         │  +6 Exclusive│         │             │
 └──────────────┘         └──────────────┘         └─────────────┘
                                 │
@@ -1222,17 +1269,17 @@ See [`docs/architecture.md`](docs/architecture.md) for detailed architecture doc
 | Category | Coverage | Tools | Status |
 |----------|----------|-------|--------|
 | **Accounts** | 100% | 7/7 | ✅ Complete |
-| **Transactions** | 100% | 12/12 | ✅ Complete + 6 exclusive ActualQL tools |
+| **Transactions** | 100% | 14/14 | ✅ Complete (+ batch update, uncategorized, 6 analysis tools) |
 | **Categories** | 100% | 4/4 | ✅ Complete |
 | **Category Groups** | 100% | 4/4 | ✅ Complete |
 | **Payees** | 100% | 6/6 | ✅ Complete |
 | **Budgets** | 100% | 8/8 | ✅ Complete |
-| **Rules** | 100% | 4/4 | ✅ Complete |
+| **Rules** | 100% | 5/5 | ✅ Complete (+ upsert) |
 | **Query & Sync** | 100% | 2/2 | ✅ Complete |
 | **Batch** | 100% | 1/1 | ✅ Complete |
 | **Server Info** | 100% | 1/1 | ✅ Complete |
 
-**Overall: 82% API Coverage (51 tools covering all major Actual Budget operations)**
+**Overall: 80%+ API Coverage (54 tools covering all major Actual Budget operations)**
 
 **⚡ Exclusive Features**: This MCP server includes 6 ActualQL-powered tools that provide advanced querying and aggregation capabilities not available in other Actual Budget integrations.
 
@@ -1242,7 +1289,7 @@ See [`docs/architecture.md`](docs/architecture.md) for detailed architecture doc
 - ❌ Budget templates
 - ❌ Transaction notes/attachments
 
-**Note**: The `actual_query_run` tool provides direct ActualQL access for advanced custom queries beyond the 51 pre-built tools.
+**Note**: The `actual_query_run` tool provides direct ActualQL access for advanced custom queries beyond the 52 pre-built tools.
 - ❌ Custom reports
 
 See [`docs/api-coverage.md`](docs/api-coverage.md) for complete API documentation with examples.
@@ -1290,7 +1337,7 @@ npm run test:e2e:docker
 **What's tested:**
 - ✅ Docker build correctness
 - ✅ Container networking
-- ✅ Real Actual Budget integration (all 51 tools)
+- ✅ Real Actual Budget integration (all 54 tools)
 - ✅ Session management
 - ✅ Production deployment scenario
 

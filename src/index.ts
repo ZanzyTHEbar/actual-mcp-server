@@ -38,13 +38,13 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('Stack:', reason.stack);
   }
   console.error('===========================');
-  
+
   // Check if this is a known query error from @actual-app/api
   const reasonStr = getUnhandledReasonMessage(reason);
   const reasonStack = getUnhandledReasonStack(reason);
-  if (reasonStr.includes('does not exist in table') || 
-      reasonStr.includes('Field') && reasonStr.includes('does not exist') ||
-      reasonStr.includes('Expression stack')) {
+  if (reasonStr.includes('does not exist in table') ||
+    reasonStr.includes('Field') && reasonStr.includes('does not exist') ||
+    reasonStr.includes('Expression stack')) {
     console.error('⚠️  Known issue: Query field validation error from @actual-app/api');
     console.error('⚠️  Server will continue running. User will see connection error.');
     // Don't crash - this is a known issue with @actual-app/api query validation
@@ -69,7 +69,7 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('⚠️  Server will continue running. User will see a tool error.');
     return;
   }
-  
+
   // For all other unhandled rejections, prefer to keep the server alive
   // unless explicitly configured to exit.
   if (process.env.MCP_EXIT_ON_UNHANDLED_REJECTION === 'true') {
@@ -109,7 +109,7 @@ if (argsEarly.includes('--help')) {
 }
 
 // Defer remaining imports until after help check to avoid starting servers on import
-export {};
+export { };
 (async () => {
   // Load dotenv here (dynamic import) only when not running with --help
   if (!argsEarly.includes('--help')) {
@@ -132,7 +132,7 @@ export {};
   const [{ connectToActual }, { testAllTools }, { ActualMCPConnection }] = await Promise.all([
     import('./actualConnection.js'),
     import('./tests/actualToolsTests.js'),
-  import('./lib/ActualMCPConnection.js'),
+    import('./lib/ActualMCPConnection.js'),
   ]);
 
   const [
@@ -164,7 +164,7 @@ export {};
   if (!VERSION || VERSION === 'unknown') {
     const packageJson = await import('../package.json', { with: { type: 'json' } });
     VERSION = packageJson.default.version;
-    
+
     // Append git commit hash for development builds
     try {
       const { execSync } = await import('child_process');
@@ -214,7 +214,7 @@ export {};
 
   async function main() {
     logger.info(`🚀 Starting Actual MCP Server v${VERSION}`);
-    
+
     // NOTE: Persistent connection disabled - using init/shutdown per operation pattern
     // This ensures tombstone=0 for all created entities (they appear in UI)
     // await connectToActual();
@@ -245,10 +245,16 @@ export {};
     // Initialize tools before usage
     await actualToolsManager.initialize();
 
-    // Now get implemented tools after initialization
-    const implementedTools = actualToolsManager.getToolNames();
+    // Progressive Disclosure: only expose meta-tools via MCP's tools/list.
+    // All internal tools are accessible through actual_tool_call dispatcher.
+    const exposedTools = actualToolsManager.getExposedToolNames();
+    const allToolCount = actualToolsManager.getToolNames().length;
+    logger.info(`🔧 Progressive Disclosure: exposing ${exposedTools.length} meta-tools (${allToolCount} internal tools available via dispatcher)`);
 
-    // Extract schemas map with tool name → JSON schema
+    // Expose meta-tool names to the server (used by ListToolsRequestSchema handler)
+    const implementedTools = exposedTools;
+
+    // Extract schemas map for meta-tools only
     const toolSchemas: Record<string, unknown> = {};
     for (const toolName of implementedTools) {
       const tool = actualToolsManager.getTool(toolName);
@@ -275,6 +281,10 @@ export {};
 
     // Create one ActualMCPConnection instance here
     const mcp = new ActualMCPConnection();
+
+    // Initialize auth provider (null if AUTH_PROVIDER=none)
+    const { createAuthProvider } = await import('./auth/auth-factory.js');
+    const authProvider = createAuthProvider();
 
     // determine advertised host (what clients should use to reach this server)
     // - MCP_BRIDGE_PUBLIC_HOST: force a public host/IP (e.g. 192.168.33.11)
@@ -312,7 +322,8 @@ export {};
         toolSchemas,
         version,
         process.env.MCP_BRIDGE_BIND_HOST || 'localhost',
-        advertisedUrl
+        advertisedUrl,
+        authProvider,
       );
 
       // dynamic import to avoid circular at top
@@ -354,10 +365,12 @@ export {};
         SERVER_DESCRIPTION,
         SERVER_INSTRUCTIONS,
         toolSchemas,
+        version,
         // bind host (ensure server accepts connections on that interface)
         process.env.MCP_BRIDGE_BIND_HOST || '0.0.0.0',
         // advertised URL shown to clients
-        advertisedUrl
+        advertisedUrl,
+        authProvider,
       );
     } else if (useSSE) {
       logger.info('Mode: SSE');

@@ -15,21 +15,32 @@ This document establishes **mandatory rules and policies** for AI agents working
 
 ---
 
-## 🛠️ Tool Count Reference
+## 🛠️ Tool Architecture: Progressive Disclosure
 
-**Current Tool Count**: **51 tools** (all registered in IMPLEMENTED_TOOLS array as of 2026-01-08)
+**MCP-Exposed Tools**: **2 meta-tools** (via `tools/list`)
+- `actual_tool_registry` — discover all internal tools with descriptions and input schemas
+- `actual_tool_call` — execute any internal tool by name
+
+**Internal Tool Count**: **54+ tools** (all accessible via `actual_tool_call` dispatcher)
 
 **Tool Categories**:
 - Accounts: 7 tools
-- Transactions: 12 tools (including 6 search + 2 summary tools)
+- Transactions: 14 tools (including batch update, uncategorized, 6 search + 2 summary tools)
 - Budgets: 9 tools
 - Categories: 4 tools
 - Category Groups: 4 tools
 - Payees: 6 tools
-- Rules: 4 tools
+- Rules: 5 tools (including create-or-update upsert)
 - Advanced: 3 tools (query, bank sync, server info)
+- Session: 2 tools (list, close)
+- Meta: 2 tools (registry, tool call)
 
 **Location**: `src/actualToolsManager.ts` - IMPLEMENTED_TOOLS array
+
+**Interaction Pattern**:
+1. AI client sees 2 tools in `tools/list`
+2. Calls `actual_tool_registry` to discover internal tools (with optional `category` filter)
+3. Calls `actual_tool_call` with `{ toolName, arguments }` to execute any internal tool
 
 ---
 

@@ -17,6 +17,8 @@
 - [Transport Protocols](#transport-protocols)
 - [Error Handling](#error-handling)
 - [Performance & Reliability](#performance--reliability)
+- [Search Module](#search-module)
+- [Caching Layer](#caching-layer)
 
 ---
 
@@ -120,6 +122,8 @@
 | **Main Entry** | `src/index.ts` | Orchestration, CLI parsing, server startup | `main()` |
 | **Connection Manager** | `src/actualConnection.ts` | Actual Budget API lifecycle | `connectToActual()`, `shutdownActual()` |
 | **Tool Manager** | `src/actualToolsManager.ts` | Tool registry and dispatch | `registerTools()`, `callTool()` |
+| **Session Worker Manager** | `src/lib/SessionWorkerManager.ts` | Per-session worker lifecycle, write coordination | `createSession()`, `executeTool()` |
+| **Write Coordinator** | `src/lib/WriteCoordinator.ts` | Actor-style write serialization (entity keys) | `acquire()` |
 | **MCP Connection** | `src/lib/ActualMCPConnection.ts` | MCP protocol implementation | `handleToolCall()`, `handleRequest()` |
 | **Adapter Layer** | `src/lib/actual-adapter.ts` | API wrapper with error handling | All Actual API functions |
 | **Configuration** | `src/config.ts` | Environment validation | `config`, `configSchema` |
@@ -138,7 +142,7 @@
 
 ### Tool Definitions
 
-51 tools organized by category:
+52 tools organized by category:
 
 ```
 src/tools/
@@ -184,6 +188,9 @@ src/tools/
 ├── rules_delete.ts
 ├── query_run.ts
 ├── bank_sync.ts
+├── hybrid_search.ts         # Hybrid FTS5 + vector + RRF retrieval
+├── search_similar.ts        # Vector similarity search (N most similar)
+├── search_index_info.ts    # Index stats + embedding provider info
 └── index.ts (exports all tools)
 ```
 
@@ -206,11 +213,18 @@ src/tools/
    │
 3. ActualMCPConnection routes request
    │
-   ├──> tools/list → Returns available tools
-   ├──> tools/call → Dispatches to ActualToolsManager
+   ├──> tools/list → Returns 2 meta-tools (Progressive Disclosure)
+   │    └──> actual_tool_registry: discover all internal tools
+   │    └──> actual_tool_call: dispatch to any internal tool
+   ├──> tools/call → Routes to SessionWorkerManager
    └──> Other MCP methods
    │
-4. ActualToolsManager validates and calls tool
+4. Progressive Disclosure dispatch:
+   │
+   ├──> actual_tool_registry → queries ActualToolsManager for full catalog
+   └──> actual_tool_call → validates toolName, delegates to SessionWorkerManager
+   │
+5. ActualToolsManager validates and calls tool
    │
    ├──> Validates tool name exists
    ├──> Validates input schema (Zod)
@@ -290,7 +304,22 @@ actual-mcp-server/
 │   ├── lib/                      # Core libraries
 │   │   ├── actual-adapter.ts     # Actual API wrapper
 │   │   ├── ActualMCPConnection.ts # MCP protocol handler
-│   │   └── retry.ts              # Retry logic utilities
+│   │   ├── cachedRefs.ts         # Centralized ref-data cache (accounts, payees, etc.)
+│   │   ├── retry.ts              # Retry logic utilities
+│   │   └── search/               # Search & caching module
+│   │       ├── index.ts          # Public exports
+│   │       ├── types.ts          # Search/cache types
+│   │       ├── ResponseCache.ts  # LRU cache + SWR + tag invalidation
+│   │       ├── CacheInvalidator.ts
+│   │       ├── syncState.ts      # Search index dirty flag
+│   │       ├── SearchIndex.ts   # libsql-backed index + FTS5 + vectors
+│   │       ├── HybridSearchEngine.ts
+│   │       ├── EmbeddingPipeline.ts
+│   │       └── providers/
+│   │           ├── types.ts, factory.ts, index.ts
+│   │           ├── HuggingFaceLocalProvider.ts
+│   │           ├── OllamaProvider.ts
+│   │           └── OpenAICompatibleProvider.ts
 │   │
 │   ├── server/                   # Transport implementations
 │   │   ├── httpServer.ts         # HTTP transport (recommended)
@@ -371,7 +400,7 @@ actual-mcp-server/
 5. Tool Registry Initialization
    └─> src/actualToolsManager.ts loads all tools
    └─> Validates tool schemas
-   └─> Registers 51 tools with MCP capabilities
+   └─> Registers 52 tools with MCP capabilities
 
 6. MCP Connection Setup
    └─> Create ActualMCPConnection instance
@@ -419,7 +448,7 @@ npm run dev -- --test-actual-connection
 
 # Test all tool implementations
 npm run dev -- --test-actual-tools
-  └─> Runs smoke tests for all 51 tools
+  └─> Runs smoke tests for all 52 tools
 
 # Test MCP client interaction
 npm run dev -- --http --test-mcp-client
@@ -620,6 +649,7 @@ queueDelay: 100ms between requests
 2. **Local Caching**: Budget data cached to SQLite (MCP_BRIDGE_DATA_DIR)
 3. **Lazy Loading**: Dynamic imports for faster cold starts
 4. **Retry Logic**: Automatic recovery from transient failures
+5. **Session Isolation**: Dedicated worker per session to enable parallel tool execution
 
 ### Monitoring
 
@@ -718,6 +748,168 @@ queueDelay: 100ms between requests
 - Prometheus metrics (`/metrics` endpoint)
 - Winston structured logging
 - Health checks (`/health` endpoint)
+
+---
+
+## Search Module
+
+The search module provides hybrid transaction retrieval: **FTS5 BM25 + vector cosine similarity + metadata filtering + Reciprocal Rank Fusion (RRF)**. It runs in-process using libsql (Turso's SQLite fork) for storage.
+
+### Architecture Overview
+
+```mermaid
+flowchart TB
+    subgraph Tools["MCP Tools"]
+        HS[actual_hybrid_search]
+        SS[actual_search_similar]
+        SI[actual_search_index_info]
+    end
+
+    subgraph Engine["Search Engine"]
+        HSE[HybridSearchEngine]
+        EP[EmbeddingPipeline]
+    end
+
+    subgraph Index["SearchIndex"]
+        FTS[FTS5 Table]
+        VEC[Vector Column]
+        META[Metadata]
+    end
+
+    subgraph Providers["Embedding Providers"]
+        HF[HuggingFace Local]
+        OL[Ollama]
+        OA[OpenAI-compatible]
+    end
+
+    HS --> HSE
+    SS --> HSE
+    SI --> Index
+    HSE --> EP
+    HSE --> Index
+    EP --> Providers
+```
+
+### Key Components
+
+| Component | Responsibility |
+|-----------|----------------|
+| **SearchIndex** | libsql-backed index with FTS5 virtual table (self-contained, not external content) and `F32_BLOB` vector columns. Incremental sync via `content_hash` per row to skip unchanged transactions. |
+| **HybridSearchEngine** | Orchestrates FTS5 BM25 + vector ANN + metadata filters; merges results via RRF. |
+| **EmbeddingPipeline** | Batches text, embeds via provider, stores vectors. |
+| **Provider factory** | Fallback chain: configured provider → local HuggingFace → null (FTS-only mode). |
+
+### Embedding Providers
+
+| Provider | Package | Use Case |
+|----------|---------|----------|
+| **HuggingFace Local** | `@huggingface/transformers` | Zero-config local embeddings |
+| **Ollama** | `ollama` | Local Ollama models |
+| **OpenAI-compatible** | `openai` | Remote API (OpenAI, Together, etc.) |
+
+**Graceful degradation:** If embeddings are unavailable, hybrid/vector search auto-downgrades to fulltext-only (FTS5).
+
+### File Structure
+
+```
+src/lib/search/
+├── index.ts              # Public exports (getSearchEngine, safeGetOrFetch, etc.)
+├── types.ts              # SearchResult, CacheTag, etc.
+├── ResponseCache.ts      # LRU + TTL + tag invalidation + SWR
+├── CacheInvalidator.ts   # Tool → tag mapping
+├── syncState.ts          # markSearchIndexDirty / isSearchIndexDirty
+├── SearchIndex.ts        # libsql index with FTS5 + vectors
+├── HybridSearchEngine.ts # RRF merge logic
+├── EmbeddingPipeline.ts  # Batch embedding
+└── providers/
+    ├── types.ts, factory.ts, index.ts
+    ├── HuggingFaceLocalProvider.ts
+    ├── OllamaProvider.ts
+    └── OpenAICompatibleProvider.ts
+
+src/lib/cachedRefs.ts     # getCachedAccounts, getCachedPayees, etc.
+
+src/tools/
+├── hybrid_search.ts      # actual_hybrid_search
+├── search_similar.ts     # actual_search_similar
+└── search_index_info.ts  # actual_search_index_info
+```
+
+### New Search Tools (3)
+
+| Tool | Description |
+|------|-------------|
+| **actual_hybrid_search** | Hybrid retrieval: FTS5 BM25 + vector cosine + metadata filters + RRF |
+| **actual_search_similar** | Find N most similar transactions by vector cosine distance |
+| **actual_search_index_info** | Expose index stats (doc count, sync state) and embedding provider info |
+
+---
+
+## Caching Layer
+
+### ResponseCache
+
+In-memory LRU cache (`lru-cache` v11) with:
+
+- **TTL** per entry
+- **Tag-based invalidation** — write tools invalidate by tag (e.g. `transactions`, `search`)
+- **Stale-while-revalidate (SWR)** — serve stale value immediately, revalidate in background
+- **Concurrent request coalescing** — duplicate in-flight requests share a single fetch
+
+### CacheInvalidator
+
+Maps write tool names to cache tags. Called after every successful write:
+
+```typescript
+invalidateAfterWrite('actual_transactions_create');
+// → invalidates tags: ['transactions', 'search']
+// → marks search index dirty for next search
+```
+
+### safeGetOrFetch
+
+Wrapper around `ResponseCache.getOrFetch` that catches cache infrastructure failures and falls through to direct API calls. Used by tools that need cached reference data.
+
+### cachedRefs.ts
+
+Centralized reference data caching with 10 min TTL:
+
+| Function | Tag | Fetcher |
+|----------|-----|---------|
+| `getCachedAccounts()` | `accounts` | `adapter.getAccounts()` |
+| `getCachedPayees()` | `payees` | `adapter.getPayees()` |
+| `getCachedCategories()` | `categories` | `adapter.getCategories()` |
+| `getCachedCategoryGroups()` | `categories` | `adapter.getCategoryGroups()` |
+
+Convention: cache keys use `ref:` prefix. Convenience builders (`getAccountMap`, `getPayeeMap`, etc.) avoid rebuilding maps on every call.
+
+```mermaid
+flowchart LR
+    subgraph Tools
+        T1[Tool A]
+        T2[Tool B]
+    end
+
+    subgraph Cache["ResponseCache"]
+        safe[safeGetOrFetch]
+    end
+
+    subgraph Invalidator["CacheInvalidator"]
+        inv[invalidateAfterWrite]
+    end
+
+    subgraph Write["Write Tools"]
+        W1[transactions_create]
+        W2[payees_update]
+    end
+
+    T1 --> safe
+    T2 --> safe
+    safe --> API[Actual Adapter]
+    W1 --> inv
+    W2 --> inv
+    inv --> Cache
+```
 
 ---
 

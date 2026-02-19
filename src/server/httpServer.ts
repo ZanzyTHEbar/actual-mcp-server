@@ -1,5 +1,4 @@
 // src/server/httpServer.ts
-import { AsyncLocalStorage } from 'async_hooks';
 import type { ActualMCPConnection } from '../lib/ActualMCPConnection.ts';
 import express, { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
@@ -12,12 +11,16 @@ import {
 import logger from '../logger.js';
 import { getLocalIp } from '../utils.js';
 import actualToolsManager from '../actualToolsManager.js';
-import { getConnectionState, connectToActualForSession, shutdownActualForSession, shutdownActual, canAcceptNewSession } from '../actualConnection.js';
+import { sessionWorkerManager } from '../lib/SessionWorkerManager.js';
+import { toTextResult } from '../lib/toolResult.js';
 import observability from '../observability.js';
 import config from '../config.js';
+import { requestContext } from '../lib/requestContext.js';
+import type { AuthProvider, AuthIdentity } from '../auth/types.js';
+import { createAuthMiddleware, getIdentityFromLocals } from '../auth/auth-middleware.js';
 
-// AsyncLocalStorage for request context (sessionId accessible to tools)
-export const requestContext = new AsyncLocalStorage<{ sessionId?: string }>();
+// Re-export for backward compatibility
+export { requestContext };
 
 export async function startHttpServer(
   mcp: ActualMCPConnection,
@@ -30,16 +33,28 @@ export async function startHttpServer(
   toolSchemas: Record<string, unknown>,              // was passed by index.ts
   version: string,                               // server version from package.json
   bindHost = 'localhost',
-  advertisedUrl?: string
+  advertisedUrl?: string,
+  authProvider?: AuthProvider | null,
 ) {
   const app = express();
   app.use(express.json());
 
+  // Mount OIDC/LDAP auth middleware if a provider is configured.
+  // When authProvider is active, it replaces the legacy MCP_SSE_AUTHORIZATION check.
+  const resolvedAuthProvider = authProvider ?? null;
+  if (resolvedAuthProvider) {
+    app.use(createAuthMiddleware(resolvedAuthProvider, ['/health', '/metrics', '/.well-known']));
+    logger.info(`[Auth] ${resolvedAuthProvider.name.toUpperCase()} auth middleware mounted`);
+  }
+
+  // Map session → authenticated identity
+  const sessionIdentities = new Map<string, AuthIdentity>();
+
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const sessionLastActivity = new Map<string, number>();
   const sessionInitPromises = new Map<string, Promise<void>>();  // Track session init completion
-  // Use same timeout as ConnectionPool (SESSION_IDLE_TIMEOUT_MINUTES env var, default: 2 minutes)
-  const idleTimeoutMinutes = parseInt(process.env.SESSION_IDLE_TIMEOUT_MINUTES || '2', 10);
+  // Use same timeout as config (SESSION_IDLE_TIMEOUT_MINUTES, default: 10 minutes)
+  const idleTimeoutMinutes = config.SESSION_IDLE_TIMEOUT_MINUTES || 10;
   const SESSION_TIMEOUT_MS = idleTimeoutMinutes * 60 * 1000;
   const SESSION_CLEANUP_INTERVAL_MS = 30 * 1000; // Check every 30 seconds
 
@@ -50,24 +65,29 @@ export async function startHttpServer(
   const cleanupInterval = setInterval(async () => {
     const now = Date.now();
     const sessionsToCleanup: string[] = [];
-    
+
     for (const [sessionId, lastActivity] of sessionLastActivity.entries()) {
       if (now - lastActivity > SESSION_TIMEOUT_MS) {
         sessionsToCleanup.push(sessionId);
       }
     }
-    
+
     for (const sessionId of sessionsToCleanup) {
       logger.info(`[SESSION] Cleaning up idle session: ${sessionId}`);
       transports.delete(sessionId);
       sessionLastActivity.delete(sessionId);
       sessionInitPromises.delete(sessionId);
-      await shutdownActualForSession(sessionId);
+      sessionIdentities.delete(sessionId);
+      await sessionWorkerManager.closeSession(sessionId);
     }
   }, SESSION_CLEANUP_INTERVAL_MS);
 
-  // Authentication middleware
+  // Legacy authentication (MCP_SSE_AUTHORIZATION static token).
+  // Only used when no real auth provider is configured.
   const authenticateRequest = (req: Request, res: Response): boolean => {
+    // If a real auth provider is mounted, it already handled auth via middleware
+    if (resolvedAuthProvider) return true;
+
     // If MCP_SSE_AUTHORIZATION is not configured, allow all requests
     if (!config.MCP_SSE_AUTHORIZATION) {
       return true;
@@ -89,15 +109,7 @@ export async function startHttpServer(
     }
 
     const token = match[1];
-    
-    // Debug logging for token comparison
-    logger.debug(`[HTTP] Auth header received: "${authHeader}"`);
-    logger.debug(`[HTTP] Extracted token: "${token}" (length: ${token.length})`);
-    logger.debug(`[HTTP] Expected token: "${config.MCP_SSE_AUTHORIZATION}" (length: ${config.MCP_SSE_AUTHORIZATION?.length || 0})`);
-    logger.debug(`[HTTP] Tokens equal: ${token === config.MCP_SSE_AUTHORIZATION}`);
-    logger.debug(`[HTTP] Token hex dump (received): ${Buffer.from(token).toString('hex')}`);
-    logger.debug(`[HTTP] Token hex dump (expected): ${Buffer.from(config.MCP_SSE_AUTHORIZATION || '').toString('hex')}`);
-    
+
     if (token !== config.MCP_SSE_AUTHORIZATION) {
       logger.warn(`[HTTP] Unauthorized request from ${req.ip || req.connection.remoteAddress}: Invalid token`);
       res.status(401).json({ error: 'Unauthorized: Invalid token' });
@@ -114,7 +126,7 @@ export async function startHttpServer(
       ? capabilities
       : { tools: toolsList.reduce((acc: Record<string, object>, n: string) => { acc[n] = {}; return acc; }, {}) };
 
-  const serverOptions: Record<string, unknown> = {
+    const serverOptions: Record<string, unknown> = {
       // Provide instructions and capabilities so the SDK initialize response is correct
       instructions: serverInstructions || "Welcome to the Actual MCP server.",
       serverInstructions: { instructions: serverInstructions || "Welcome to the Actual MCP server." },
@@ -138,18 +150,18 @@ export async function startHttpServer(
       logger.debug(`[TOOLS LIST] toolsList length: ${toolsList.length}`);
       const tools = toolsList.map((name: string) => {
         const schemaFromParam = toolSchemas && toolSchemas[name];
-  const schemaFromManager = (actualToolsManager as unknown as { getToolSchema?: (n: string) => unknown })?.getToolSchema?.(name);
+        const schemaFromManager = (actualToolsManager as unknown as { getToolSchema?: (n: string) => unknown })?.getToolSchema?.(name);
         const schema = schemaFromParam || schemaFromManager;
-        
+
         // Ensure inputSchema is a valid JSON Schema object with required properties
         const inputSchema = schema && typeof schema === 'object' && Object.keys(schema).length > 0
           ? schema
           : { type: 'object', properties: {}, additionalProperties: false };
-        
+
         // Get the actual tool description from the tool definition
         const tool = actualToolsManager.getTool(name);
         const description = tool?.description || `Tool ${name}`;
-        
+
         return {
           name,
           description,
@@ -173,18 +185,62 @@ export async function startHttpServer(
       const name = rawName;
       logger.debug(`[TOOL CALL] ${name} args=${JSON.stringify(args)}`);
       // Prefer ActualMCPConnection executor if provided
-      if (typeof (mcp as unknown as { executeTool?: Function }).executeTool === 'function') {
-        const result = await (mcp as unknown as { executeTool?: (n: string, a?: unknown) => Promise<unknown> }).executeTool!(name, args ?? {});
-        return {
-          content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }],
-        };
+      const context = requestContext.getStore();
+      const sessionId = context?.sessionId;
+
+      if (!sessionId) {
+        throw new Error('Session id not available for tool execution');
       }
-      // fallback: attempt actualToolsManager
-      if (actualToolsManager && typeof (actualToolsManager as unknown as { invoke?: Function }).invoke === 'function') {
-        const r = await (actualToolsManager as unknown as { invoke?: (n: string, a?: unknown) => Promise<unknown> }).invoke!(name, args ?? {});
-        return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+
+      if (name === 'actual_session_list') {
+        const stats = sessionWorkerManager.getStats();
+        return toTextResult(stats);
       }
-      throw new Error(`Tool executor not available for ${name}`);
+
+      if (name === 'actual_session_close') {
+        const input = (args || {}) as { sessionId?: string };
+        const stats = sessionWorkerManager.getStats();
+        if (stats.totalSessions === 0) {
+          return toTextResult({ success: false, message: 'No sessions to close' });
+        }
+
+        let targetSessionId: string | null = null;
+        if (input.sessionId) {
+          const matches = stats.sessions.filter((s) => s.sessionId.toLowerCase().includes(input.sessionId!.toLowerCase()));
+          if (matches.length === 0) {
+            return toTextResult({ success: false, message: `No session found matching "${input.sessionId}"`, availableSessions: stats.sessions.map((s) => s.sessionId) });
+          }
+          if (matches.length > 1) {
+            return toTextResult({ success: false, message: `Multiple sessions match "${input.sessionId}". Please be more specific.`, matchingSessions: matches.map((s) => s.sessionId) });
+          }
+          targetSessionId = matches[0].sessionId;
+        } else {
+          const sorted = [...stats.sessions]
+            .filter((s) => s.sessionId !== sessionId)
+            .sort((a, b) => b.idleMinutes - a.idleMinutes);
+          if (sorted.length === 0) {
+            return toTextResult({ success: false, message: 'No other sessions to close (only your current session is active)' });
+          }
+          targetSessionId = sorted[0].sessionId;
+        }
+
+        if (targetSessionId === sessionId) {
+          return toTextResult({ success: false, message: 'Cannot close your current session. Please specify a different session.' });
+        }
+
+        await sessionWorkerManager.closeSession(targetSessionId);
+        const newStats = sessionWorkerManager.getStats();
+        return toTextResult({
+          success: true,
+          message: `Session ${targetSessionId} closed successfully`,
+          closedSession: targetSessionId,
+          remainingSessions: newStats.totalSessions,
+          maxConcurrent: newStats.maxConcurrent,
+          availableSlots: newStats.maxConcurrent - newStats.activeSessions,
+        });
+      }
+
+      return await sessionWorkerManager.executeTool(sessionId, name, args ?? {});
     });
 
     return { server };
@@ -196,10 +252,10 @@ export async function startHttpServer(
     const accept = req.get('Accept');
     logger.debug(`[ACCEPT HEADER MIDDLEWARE] Original: ${accept || 'undefined'}`);
     // Fix Accept header if it's missing, */* , or doesn't include BOTH required types
-    const needsFix = !accept || 
-                     accept === '*/*' || 
-                     !accept.includes('application/json') || 
-                     !accept.includes('text/event-stream');
+    const needsFix = !accept ||
+      accept === '*/*' ||
+      !accept.includes('application/json') ||
+      !accept.includes('text/event-stream');
     if (needsFix) {
       logger.debug('[ACCEPT HEADER MIDDLEWARE] Modifying Accept header for MCP SDK compatibility');
       // Use setHeader to properly modify the request headers
@@ -235,23 +291,23 @@ export async function startHttpServer(
         const schemaFromParam = toolSchemas && toolSchemas[name];
         const schemaFromManager = (actualToolsManager as unknown as { getToolSchema?: (n: string) => unknown })?.getToolSchema?.(name);
         const schema = schemaFromParam || schemaFromManager;
-        
+
         // Ensure inputSchema is a valid JSON Schema object with required properties
         const inputSchema = schema && typeof schema === 'object' && Object.keys(schema).length > 0
           ? schema
           : { type: 'object', properties: {}, additionalProperties: false };
-        
+
         // Get the actual tool description from the tool definition
         const tool = actualToolsManager.getTool(name);
         const description = tool?.description || `Tool ${name}`;
-        
+
         return {
           name,
           description,
           inputSchema,
         };
       });
-      
+
       res.json({
         jsonrpc: '2.0',
         id: payload?.id ?? null,
@@ -274,17 +330,16 @@ export async function startHttpServer(
         }
 
         // Check if we can accept a new session (concurrent limit)
-        if (!canAcceptNewSession()) {
-          const state = getConnectionState();
-          const stats = state.connectionPool;
-          const timeoutMinutes = state.idleTimeoutMinutes || 2;
+        if (!sessionWorkerManager.canAcceptNewSession()) {
+          const stats = sessionWorkerManager.getStats();
+          const timeoutMinutes = idleTimeoutMinutes || 2;
           const errorMsg = `Max concurrent sessions (${stats?.maxConcurrent}) reached. Active: ${stats?.activeSessions}. Please close existing sessions or wait for idle sessions to timeout (${timeoutMinutes} minutes).`;
           logger.warn(`[SESSION] Rejecting new session: ${errorMsg}`);
           res.status(503).json({
             jsonrpc: '2.0',
             id: payload?.id ?? null,
-            error: { 
-              code: -32000, 
+            error: {
+              code: -32000,
               message: errorMsg,
               data: {
                 maxConcurrent: stats?.maxConcurrent,
@@ -308,6 +363,9 @@ export async function startHttpServer(
           rejectInit = reject;
         });
 
+        // Capture identity from auth middleware (if auth is active)
+        const initIdentity = getIdentityFromLocals(res);
+
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
@@ -315,18 +373,23 @@ export async function startHttpServer(
             logger.debug(`Session initialized: ${sid}`);
             // Store the promise before starting initialization
             sessionInitPromises.set(sid, initPromise);
+
+            // Bind identity to session (if authenticated)
+            if (initIdentity) {
+              sessionIdentities.set(sid, initIdentity);
+              logger.info(`[SESSION] Bound identity ${initIdentity.userId} to session ${sid}`);
+            }
+
             // Initialize connection pool for this session
             try {
-              await connectToActualForSession(sid);
-              // Only add to transports/activity map if connection successful
+              await sessionWorkerManager.createSession(sid);
+              // Only add to transports/activity map if worker session initialized
               transports.set(sid, transport);
               sessionLastActivity.set(sid, Date.now());
-              logger.info(`[SESSION] Actual connection initialized for session: ${sid}`);
+              logger.info(`[SESSION] Worker session initialized for session: ${sid}`);
               resolveInit?.();
             } catch (err) {
-              logger.error(`[SESSION] Failed to initialize Actual for session ${sid}:`, err);
-              // Don't add failed sessions to transports map - they won't be usable anyway
-              // This prevents accumulation of dead sessions
+              logger.error(`[SESSION] Failed to initialize worker for session ${sid}:`, err);
               rejectInit?.(err);
             } finally {
               // Clean up the promise after a short delay to allow pending requests to complete
@@ -338,8 +401,8 @@ export async function startHttpServer(
         // connect transport then handle request (matching working example)
         await server.connect(transport);
         try {
-          // Run in AsyncLocalStorage context so tools can access sessionId
-          await requestContext.run({ sessionId: undefined }, async () => {
+          // Run in AsyncLocalStorage context so tools can access sessionId + identity
+          await requestContext.run({ sessionId: undefined, identity: initIdentity }, async () => {
             await transport.handleRequest(req, res, req.body);
           });
         } catch (err: unknown) {
@@ -370,7 +433,7 @@ export async function startHttpServer(
             // Fall through to session not found handling
           }
         }
-        
+
         if (!transport) {
           // Session doesn't exist (expired, server restarted, or invalid)
           // For tools/list, return tools for LobeChat discovery (they cache session IDs)
@@ -381,21 +444,21 @@ export async function startHttpServer(
               const schemaFromParam = toolSchemas && toolSchemas[name];
               const schemaFromManager = (actualToolsManager as unknown as { getToolSchema?: (n: string) => unknown })?.getToolSchema?.(name);
               const schema = schemaFromParam || schemaFromManager;
-              
+
               const inputSchema = schema && typeof schema === 'object' && Object.keys(schema).length > 0
                 ? schema
                 : { type: 'object', properties: {}, additionalProperties: false };
-              
+
               const tool = actualToolsManager.getTool(name);
               const description = tool?.description || `Tool ${name}`;
-              
+
               return {
                 name,
                 description,
                 inputSchema,
               };
             });
-            
+
             res.json({
               jsonrpc: '2.0',
               id: payload?.id ?? null,
@@ -403,26 +466,43 @@ export async function startHttpServer(
             });
             return;
           }
-        
+
           // For other methods, reject the request and tell client to re-initialize
           logger.warn(`[SESSION] Session ${sessionId} not found (method: ${method}). Client must re-initialize.`);
           res.status(400).json({
             jsonrpc: '2.0',
             id: payload?.id ?? null,
-            error: { 
-              code: -32000, 
-              message: 'Session expired or invalid. Please re-initialize by calling initialize without mcp-session-id header.' 
+            error: {
+              code: -32000,
+              message: 'Session expired or invalid. Please re-initialize by calling initialize without mcp-session-id header.'
             },
           });
           return;
         }
       }
-      
+
       // Update activity timestamp for valid session
       sessionLastActivity.set(sessionId, Date.now());
 
-      // Run in AsyncLocalStorage context so tools can access sessionId
-      await requestContext.run({ sessionId }, async () => {
+      // Resolve identity: from current request auth or from session binding
+      const reqIdentity = getIdentityFromLocals(res) || sessionIdentities.get(sessionId);
+
+      // If auth is active, enforce session-identity binding (one user per session)
+      if (resolvedAuthProvider && reqIdentity && sessionIdentities.has(sessionId)) {
+        const boundIdentity = sessionIdentities.get(sessionId)!;
+        if (boundIdentity.userId !== reqIdentity.userId) {
+          logger.warn(`[Auth] Identity mismatch: session bound to ${boundIdentity.userId}, request from ${reqIdentity.userId}`);
+          res.status(403).json({
+            jsonrpc: '2.0',
+            id: payload?.id ?? null,
+            error: { code: -32000, message: 'Forbidden: session belongs to a different user' },
+          });
+          return;
+        }
+      }
+
+      // Run in AsyncLocalStorage context so tools can access sessionId + identity
+      await requestContext.run({ sessionId, identity: reqIdentity }, async () => {
         await transport.handleRequest(req, res, req.body);
       });
     } catch (err: unknown) {
@@ -482,14 +562,12 @@ export async function startHttpServer(
   });
 
   app.get('/health', (_req, res) => {
-    const state = getConnectionState();
-    const poolStats = state.connectionPool || null;
-    res.json({ 
-      status: state.initialized ? 'ok' : 'not-initialized', 
-      ...state, 
-      transport: 'streamable-http', 
+    const stats = sessionWorkerManager.getStats();
+    res.json({
+      status: 'ok',
+      ...stats,
+      transport: 'streamable-http',
       activeSessions: transports.size,
-      connectionPool: poolStats
     });
   });
 
@@ -508,7 +586,9 @@ export async function startHttpServer(
     console.info(`MCP Streamable HTTP Server listening on ${port}`);
     console.info(`📨 MCP endpoint: ${advertised}`);
     console.info(`❤️ Health check: http://localhost:${port}/health`);
-    if (config.MCP_SSE_AUTHORIZATION) {
+    if (resolvedAuthProvider) {
+      logger.info(`🔒 Authentication enabled (provider: ${resolvedAuthProvider.name})`);
+    } else if (config.MCP_SSE_AUTHORIZATION) {
       logger.info(`🔒 HTTP authentication enabled (Bearer token required)`);
     } else {
       logger.warn(`⚠️  HTTP authentication disabled (no MCP_SSE_AUTHORIZATION set)`);
@@ -525,13 +605,12 @@ export async function startHttpServer(
     logger.info('[SERVER] Shutting down, cleaning up sessions...');
     clearInterval(cleanupInterval);
     for (const sessionId of transports.keys()) {
-      await shutdownActualForSession(sessionId);
+      await sessionWorkerManager.closeSession(sessionId);
     }
     transports.clear();
     sessionLastActivity.clear();
     sessionInitPromises.clear();
-    // Also shut down the shared/pooled connections
-    await shutdownActual();
+    sessionIdentities.clear();
   };
 
   process.on('SIGTERM', cleanup);
