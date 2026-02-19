@@ -5,6 +5,11 @@
  * and response cache so every layer speaks the same language.
  */
 
+import type DatabaseConstructor from 'libsql';
+
+/** libsql Database instance type, used across search modules. */
+export type DatabaseInstance = InstanceType<typeof DatabaseConstructor>;
+
 // ---------------------------------------------------------------------------
 // Domain entities (denormalized for indexing)
 // ---------------------------------------------------------------------------
@@ -61,6 +66,93 @@ export interface RefPayee {
 export interface RefCategoryGroup {
   id: string;
   name: string;
+}
+
+// ---------------------------------------------------------------------------
+// Database row types (what SQLite actually returns)
+// ---------------------------------------------------------------------------
+
+/** Raw transaction row from the `transactions` table. */
+export interface TransactionRow {
+  id: string;
+  date: string;
+  amount: number;
+  notes: string | null;
+  payee_id: string | null;
+  payee_name: string | null;
+  category_id: string | null;
+  category_name: string | null;
+  account_id: string | null;
+  account_name: string | null;
+  is_transfer: number; // SQLite boolean: 0 or 1
+  cleared: number;     // SQLite boolean: 0 or 1
+  content_hash: string;
+  embedding: Uint8Array | null; // F32_BLOB or NULL
+}
+
+/** Row returned from FTS5 fulltext search with join. */
+export interface FTSResultRow extends TransactionRow {
+  rank_num: number;
+  fts_rank: number;
+}
+
+/** Row returned from vector similarity search. */
+export interface VecResultRow extends TransactionRow {
+  vec_dist: number;
+  rank_num: number;
+}
+
+/** Row returned from the full hybrid RRF query. */
+export interface HybridResultRow extends TransactionRow {
+  rrf_score: number;
+  fts_rank: number | null;
+  vec_rank: number | null;
+}
+
+/**
+ * Union of all possible search row types that rowToResult must handle.
+ * Every variant has the TransactionRow base plus optional score fields.
+ */
+export type SearchResultRow = TransactionRow & {
+  rank_num?: number;
+  fts_rank?: number | null;
+  vec_dist?: number;
+  vec_rank?: number | null;
+  rrf_score?: number;
+};
+
+/** Row from `SELECT id, content_hash FROM transactions`. */
+export interface HashRow {
+  id: string;
+  content_hash: string;
+}
+
+/** Row from `SELECT embedding FROM embedding_cache`. */
+export interface EmbeddingCacheRow {
+  text_hash: string;
+  embedding: Buffer | Uint8Array; // F32_BLOB binary (LE float32)
+  created_at: string;
+}
+
+/** Row from `PRAGMA table_info(...)`. */
+export interface PragmaTableInfoRow {
+  cid: number;
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: string | null;
+  pk: number;
+}
+
+/** Row from `SELECT COUNT(*) as c ...`. */
+export interface CountRow {
+  c: number;
+}
+
+/** Row from sync_meta table. */
+export interface SyncMetaRow {
+  key: string;
+  value: string;
 }
 
 // ---------------------------------------------------------------------------
