@@ -223,7 +223,20 @@ export async function startSseServer(
 
       await sessionWorkerManager.createSession(sessionId);
 
+      const KEEPALIVE_INTERVAL_MS = 30_000;
+      const keepaliveTimer = setInterval(() => {
+        try {
+          if (!res.writableEnded && !res.destroyed) {
+            res.write(': keepalive\n\n');
+            sessionWorkerManager.touchSession(sessionId);
+          }
+        } catch {
+          // ignore write errors (e.g. client disconnected)
+        }
+      }, KEEPALIVE_INTERVAL_MS);
+
       transport.onclose = async () => {
+        clearInterval(keepaliveTimer);
         logger.info(`❌ SSE client disconnected (session: ${sessionId}) from ${clientIp}`);
         delete transports[sessionId];
         sessionIdentities.delete(sessionId);

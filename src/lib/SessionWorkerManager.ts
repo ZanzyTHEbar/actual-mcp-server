@@ -110,6 +110,12 @@ export class SessionWorkerManager {
     });
   }
 
+  /** Update last activity timestamp for a session (e.g. on keepalive heartbeat). */
+  touchSession(sessionId: string): void {
+    const info = this.workers.get(sessionId);
+    if (info) info.lastActivity = Date.now();
+  }
+
   async closeSession(sessionId: string): Promise<void> {
     const info = this.workers.get(sessionId);
     if (!info) return;
