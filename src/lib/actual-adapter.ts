@@ -62,17 +62,34 @@ function withSessionLock<T>(operation: () => Promise<T>): Promise<T> {
   return run;
 }
 
+const NO_BUDGET_PATTERNS = ['No budget file is open', 'budget is not open', 'budget file is not open'];
+
+function isNoBudgetError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return NO_BUDGET_PATTERNS.some((p) => msg.includes(p));
+}
+
 async function withActualApi<T>(operation: () => Promise<T>): Promise<T> {
   return withSessionLock(async () => {
+    await initActualApiForOperation();
     try {
-      // Initialize API for this operation
-      await initActualApiForOperation();
-
-      // Execute the operation
       return await operation();
+    } catch (err) {
+      if (isNoBudgetError(err)) {
+        logger.warn('[ADAPTER] Budget not open; re-initializing and retrying operation');
+        await shutdownActualApi();
+        await initActualApiForOperation();
+        try {
+          return await operation();
+        } catch (retryErr) {
+          const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          throw new Error(
+            `Budget operation failed after retry. Call actual_budgets_getMonth first to load the budget. Original: ${msg}`
+          );
+        }
+      }
+      throw err;
     } finally {
-      // CRITICAL: Always call shutdown after operation
-      // This ensures data is properly committed and tombstone=0
       await shutdownActualApi();
     }
   });
@@ -692,29 +709,7 @@ export async function runQuery(queryString: string | any): Promise<unknown> {
     return await withActualApi(async () => {
       observability.incrementToolCall('actual.query.run').catch(() => { });
 
-      const executeQueryWithRetry = async (queryObj: unknown) => {
-        try {
-          return await rawRunQuery(queryObj) as Promise<unknown>;
-        } catch (err: any) {
-          const msg = err?.message || String(err);
-          if (msg.includes('No budget file is open') || msg.includes('budget is not open')) {
-            logger.warn('[ADAPTER] Budget not open; re-initializing and retrying query');
-            try {
-              await shutdownActualApi();
-              await initActualApiForOperation();
-              return await rawRunQuery(queryObj) as Promise<unknown>;
-            } catch (retryErr: any) {
-              const retryMsg = retryErr?.message || String(retryErr);
-              throw new Error(
-                `No budget is currently open and auto-recovery failed. ` +
-                `Call actual_budgets_getMonth first to open the budget before running queries. ` +
-                `Original error: ${retryMsg}`,
-              );
-            }
-          }
-          throw err;
-        }
-      };
+      const executeQuery = async (queryObj: unknown) => rawRunQuery(queryObj) as Promise<unknown>;
 
       try {
         // Import validation utilities
@@ -734,7 +729,7 @@ export async function runQuery(queryString: string | any): Promise<unknown> {
           try {
             return await withConcurrency(async () => {
               try {
-                return await executeQueryWithRetry(queryString);
+                return await executeQuery(queryString);
               } catch (err: any) {
                 // Catch errors from the query execution to prevent unhandled rejections
                 const msg = err?.message || String(err);
@@ -846,7 +841,7 @@ export async function runQuery(queryString: string | any): Promise<unknown> {
         try {
           return await withConcurrency(async () => {
             try {
-              return await executeQueryWithRetry(query);
+              return await executeQuery(query);
             } catch (err: any) {
               // Catch errors from the query execution to prevent unhandled rejections
               const msg = err?.message || String(err);
