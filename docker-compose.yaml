@@ -8,9 +8,6 @@
 #   Development:  docker compose --profile dev up
 #   Production:   docker compose --profile production up
 # ============================================================================
-
-version: '3.8'
-
 services:
   # --------------------------------------------------------------------------
   # Actual MCP Server - Development Mode

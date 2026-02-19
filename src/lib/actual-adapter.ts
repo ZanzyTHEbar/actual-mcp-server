@@ -67,7 +67,7 @@ async function withActualApi<T>(operation: () => Promise<T>): Promise<T> {
     try {
       // Initialize API for this operation
       await initActualApiForOperation();
-      
+
       // Execute the operation
       return await operation();
     } finally {
@@ -91,7 +91,7 @@ async function initActualApiForOperation(): Promise<void> {
     const DATA_DIR = process.env.MCP_BRIDGE_DATA_DIR || './test-actual-data';
 
     logger.debug('[ADAPTER] Initializing Actual API for operation');
-    
+
     await api.init({
       dataDir: DATA_DIR,
       serverURL: SERVER_URL,
@@ -99,17 +99,38 @@ async function initActualApiForOperation(): Promise<void> {
     });
 
     logger.debug('[ADAPTER] Downloading budget');
-    
+
     if (BUDGET_PASSWORD) {
       const apiWithOptions = api as typeof api & { downloadBudget: (id: string, options?: { password: string }) => Promise<void> };
       await apiWithOptions.downloadBudget(BUDGET_SYNC_ID!, { password: BUDGET_PASSWORD });
     } else {
       await api.downloadBudget(BUDGET_SYNC_ID!);
     }
-    
+
     logger.debug('[ADAPTER] Actual API initialized for operation');
-  } catch (err) {
+  } catch (err: any) {
+    const msg = err?.message || String(err);
     logger.error('[ADAPTER] Error initializing Actual API:', err);
+
+    // Provide actionable remediation hints
+    if (msg.includes('ACTUAL_SERVER_URL') || msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
+      throw new Error(
+        `Cannot connect to the Actual Budget server. Verify ACTUAL_SERVER_URL is correct and the server is running. ` +
+        `Original error: ${msg}`,
+      );
+    }
+    if (msg.includes('password') || msg.includes('401') || msg.includes('Unauthorized')) {
+      throw new Error(
+        `Authentication failed with the Actual Budget server. Check ACTUAL_PASSWORD and ACTUAL_BUDGET_PASSWORD environment variables. ` +
+        `Original error: ${msg}`,
+      );
+    }
+    if (msg.includes('ACTUAL_BUDGET_SYNC_ID') || msg.includes('budget') || msg.includes('sync')) {
+      throw new Error(
+        `Failed to download budget. Verify ACTUAL_BUDGET_SYNC_ID is set correctly and the budget exists on the server. ` +
+        `Original error: ${msg}`,
+      );
+    }
     throw err;
   }
 }
@@ -156,21 +177,21 @@ async function processWriteQueue() {
   // Atomically check and set processing flag to prevent race conditions
   if (isProcessingWrites || writeQueue.length === 0) return;
   isProcessingWrites = true;
-  
+
   // Clear the timeout since we're processing now
   if (writeSessionTimeout) {
     clearTimeout(writeSessionTimeout);
     writeSessionTimeout = null;
   }
-  
+
   const batch = writeQueue.splice(0, writeQueue.length); // Take all current items
   logger.debug(`[WRITE QUEUE] Processing batch of ${batch.length} operations`);
-  
+
   try {
     await withSessionLock(async () => {
       // Initialize API once for all queued writes
       await initActualApiForOperation();
-      
+
       // Process all queued writes in the same session
       // Each operation handles its own success/failure
       await Promise.allSettled(
@@ -184,7 +205,7 @@ async function processWriteQueue() {
           }
         })
       );
-      
+
       // Explicitly sync changes to server before shutdown
       // This ensures all write operations are persisted
       logger.debug(`[WRITE QUEUE] Syncing ${batch.length} operations to server`);
@@ -196,7 +217,7 @@ async function processWriteQueue() {
         // Don't throw - we still want to shutdown cleanly
         // Individual operation errors were already reported to callers
       }
-      
+
       // Shutdown after all writes complete and sync
       await shutdownActualApi();
     });
@@ -225,12 +246,12 @@ async function processWriteQueue() {
 function queueWriteOperation<T>(operation: () => Promise<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     writeQueue.push({ operation, resolve, reject });
-    
+
     // Clear existing timeout
     if (writeSessionTimeout) {
       clearTimeout(writeSessionTimeout);
     }
-    
+
     // Set new timeout to process queue
     writeSessionTimeout = setTimeout(() => {
       processWriteQueue();
@@ -294,7 +315,7 @@ async function syncToServer(): Promise<void> {
     // Small delay to ensure local changes are committed to the database
     // before attempting to sync to the server
     await new Promise(resolve => setTimeout(resolve, 100));
-    
+
     // TypeScript doesn't recognize sync in the type definitions, but it exists at runtime
     console.log('[SYNC] Calling api.sync()...');
     await (api as any).sync();
@@ -359,13 +380,13 @@ export function normalizeImportResult(raw: unknown): { added?: string[]; updated
 
 export async function getAccounts(): Promise<components['schemas']['Account'][]> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.accounts.list').catch(() => {});
+    observability.incrementToolCall('actual.accounts.list').catch(() => { });
     return await withConcurrency(() => retry(() => rawGetAccounts() as Promise<components['schemas']['Account'][]>, { retries: 2, backoffMs: 200 }));
   });
 }
 // addTransactions returns various formats: "ok", array of IDs, or Transaction objects
-export async function addTransactions(txs: components['schemas']['TransactionInput'][] | components['schemas']['TransactionInput']) : Promise<string[]> {
-  observability.incrementToolCall('actual.transactions.create').catch(() => {});
+export async function addTransactions(txs: components['schemas']['TransactionInput'][] | components['schemas']['TransactionInput']): Promise<string[]> {
+  observability.incrementToolCall('actual.transactions.create').catch(() => { });
   return queueWriteOperation(async () => {
     // The Actual API expects addTransactions(accountId, transactions, options)
     // Extract accountId from the first transaction and remove it from transaction objects
@@ -373,21 +394,21 @@ export async function addTransactions(txs: components['schemas']['TransactionInp
     if (txArray.length === 0) {
       throw new Error('No transactions provided');
     }
-    
+
     const accountId = (txArray[0] as any).account || (txArray[0] as any).accountId;
     if (!accountId) {
       throw new Error('Transaction must include account or accountId');
     }
-    
+
     // Remove account/accountId from transaction objects as they're passed separately
     const cleanedTxs = txArray.map(tx => {
       const { account, accountId: _, ...rest } = tx as any;
       return rest;
     });
-    
+
     // API docs say it returns id[], but reality is it can return "ok", array of IDs, or Transaction objects
     const result = await withConcurrency(() => retry(() => rawAddTransactions(accountId, cleanedTxs, {}) as Promise<unknown>, { retries: 2, backoffMs: 200 }));
-    
+
     // Handle various return formats
     if (result === 'ok') {
       // Transaction created successfully but no IDs returned
@@ -404,12 +425,12 @@ export async function addTransactions(txs: components['schemas']['TransactionInp
       // Single Transaction object
       return [(result as any).id];
     }
-    
+
     return [];
   });
 }
-export async function importTransactions(accountId: string | undefined, txs: components['schemas']['TransactionInput'][] | unknown) : Promise<{ added?: string[]; updated?: string[]; errors?: string[] }>{
-  observability.incrementToolCall('actual.transactions.import').catch(() => {});
+export async function importTransactions(accountId: string | undefined, txs: components['schemas']['TransactionInput'][] | unknown): Promise<{ added?: string[]; updated?: string[]; errors?: string[] }> {
+  observability.incrementToolCall('actual.transactions.import').catch(() => { });
   return queueWriteOperation(async () => {
     const raw = await withConcurrency(() => retry(() => rawImportTransactions(accountId, txs) as Promise<{ added?: string[]; updated?: string[]; errors?: string[] }>, { retries: 2, backoffMs: 200 }));
     return raw || { added: [], updated: [], errors: [] };
@@ -417,18 +438,18 @@ export async function importTransactions(accountId: string | undefined, txs: com
 }
 export async function getTransactions(accountId: string | undefined, startDate?: string, endDate?: string): Promise<components['schemas']['Transaction'][]> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.transactions.get').catch(() => {});
+    observability.incrementToolCall('actual.transactions.get').catch(() => { });
     return await withConcurrency(() => retry(() => rawGetTransactions(accountId, startDate, endDate) as Promise<components['schemas']['Transaction'][]>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function getCategories(): Promise<components['schemas']['Category'][]> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.categories.get').catch(() => {});
+    observability.incrementToolCall('actual.categories.get').catch(() => { });
     return await withConcurrency(() => retry(() => rawGetCategories() as Promise<components['schemas']['Category'][]>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function createCategory(category: components['schemas']['Category'] | unknown): Promise<string> {
-  observability.incrementToolCall('actual.categories.create').catch(() => {});
+  observability.incrementToolCall('actual.categories.create').catch(() => { });
   return queueWriteOperation(async () => {
     try {
       const raw = await withConcurrency(() => retry(() => rawCreateCategory(category) as Promise<string | { id?: string }>, { retries: 0, backoffMs: 200 }));
@@ -445,12 +466,12 @@ export async function createCategory(category: components['schemas']['Category']
 }
 export async function getPayees(): Promise<components['schemas']['Payee'][]> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.payees.get').catch(() => {});
+    observability.incrementToolCall('actual.payees.get').catch(() => { });
     return await withConcurrency(() => retry(() => rawGetPayees() as Promise<components['schemas']['Payee'][]>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function createPayee(payee: components['schemas']['Payee'] | unknown): Promise<string> {
-  observability.incrementToolCall('actual.payees.create').catch(() => {});
+  observability.incrementToolCall('actual.payees.create').catch(() => { });
   return queueWriteOperation(async () => {
     const raw = await withConcurrency(() => retry(() => rawCreatePayee(payee) as Promise<string | { id?: string }>, { retries: 2, backoffMs: 200 }));
     return normalizeToId(raw);
@@ -458,25 +479,25 @@ export async function createPayee(payee: components['schemas']['Payee'] | unknow
 }
 export async function getBudgetMonths(): Promise<string[]> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.budgets.getMonths').catch(() => {});
+    observability.incrementToolCall('actual.budgets.getMonths').catch(() => { });
     return await withConcurrency(() => retry(() => rawGetBudgetMonths() as Promise<string[]>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function getBudgetMonth(month: string | undefined): Promise<components['schemas']['BudgetMonth']> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.budgets.getMonth').catch(() => {});
+    observability.incrementToolCall('actual.budgets.getMonth').catch(() => { });
     return await withConcurrency(() => retry(() => rawGetBudgetMonth(month) as Promise<components['schemas']['BudgetMonth']>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function setBudgetAmount(month: string | undefined, categoryId: string | undefined, amount: number | undefined): Promise<components['schemas']['BudgetSetRequest'] | null | void> {
-  observability.incrementToolCall('actual.budgets.setAmount').catch(() => {});
+  observability.incrementToolCall('actual.budgets.setAmount').catch(() => { });
   return queueWriteOperation(async () => {
     const result = await withConcurrency(() => retry(() => rawSetBudgetAmount(month, categoryId, amount) as Promise<components['schemas']['BudgetSetRequest'] | null | void>, { retries: 2, backoffMs: 200 }));
     return result;
   });
 }
 export async function createAccount(account: components['schemas']['Account'] | unknown, initialBalance?: number): Promise<string> {
-  observability.incrementToolCall('actual.accounts.create').catch(() => {});
+  observability.incrementToolCall('actual.accounts.create').catch(() => { });
   return queueWriteOperation(async () => {
     const raw = await withConcurrency(() => retry(() => rawCreateAccount(account, initialBalance) as Promise<string | { id?: string }>, { retries: 2, backoffMs: 200 }));
     const id = normalizeToId(raw);
@@ -485,7 +506,7 @@ export async function createAccount(account: components['schemas']['Account'] | 
   });
 }
 export async function updateAccount(id: string, fields: Partial<components['schemas']['Account']> | unknown): Promise<void | null> {
-  observability.incrementToolCall('actual.accounts.update').catch(() => {});
+  observability.incrementToolCall('actual.accounts.update').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawUpdateAccount(id, fields) as Promise<void | null>, { retries: 2, backoffMs: 200 }));
     return null;
@@ -493,62 +514,62 @@ export async function updateAccount(id: string, fields: Partial<components['sche
 }
 export async function getAccountBalance(id: string, cutoff?: string): Promise<number> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.accounts.get.balance').catch(() => {});
+    observability.incrementToolCall('actual.accounts.get.balance').catch(() => { });
     return await withConcurrency(() => retry(() => rawGetAccountBalance(id, cutoff) as Promise<number>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function deleteAccount(id: string): Promise<void> {
-  observability.incrementToolCall('actual.accounts.delete').catch(() => {});
+  observability.incrementToolCall('actual.accounts.delete').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawDeleteAccount(id) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function updateTransaction(id: string, fields: Partial<components['schemas']['Transaction']> | unknown): Promise<void> {
-  observability.incrementToolCall('actual.transactions.update').catch(() => {});
+  observability.incrementToolCall('actual.transactions.update').catch(() => { });
   // Use write queue to batch concurrent updates in a single budget session
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawUpdateTransaction(id, fields) as Promise<void>, { retries: 0, backoffMs: 200 }));
   });
 }
 export async function deleteTransaction(id: string): Promise<void> {
-  observability.incrementToolCall('actual.transactions.delete').catch(() => {});
+  observability.incrementToolCall('actual.transactions.delete').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawDeleteTransaction(id) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function updateCategory(id: string, fields: Partial<components['schemas']['Category']> | unknown): Promise<void> {
-  observability.incrementToolCall('actual.categories.update').catch(() => {});
+  observability.incrementToolCall('actual.categories.update').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawUpdateCategory(id, fields) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function deleteCategory(id: string): Promise<void> {
-  observability.incrementToolCall('actual.categories.delete').catch(() => {});
+  observability.incrementToolCall('actual.categories.delete').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawDeleteCategory(id) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function updatePayee(id: string, fields: Partial<components['schemas']['Payee']> | unknown): Promise<void> {
-  observability.incrementToolCall('actual.payees.update').catch(() => {});
+  observability.incrementToolCall('actual.payees.update').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawUpdatePayee(id, fields) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function deletePayee(id: string): Promise<void> {
-  observability.incrementToolCall('actual.payees.delete').catch(() => {});
+  observability.incrementToolCall('actual.payees.delete').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawDeletePayee(id) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function getRules(): Promise<unknown[]> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.rules.get').catch(() => {});
+    observability.incrementToolCall('actual.rules.get').catch(() => { });
     const raw = await withConcurrency(() => retry(() => rawGetRules() as Promise<unknown[]>, { retries: 2, backoffMs: 200 }));
     return Array.isArray(raw) ? raw : [];
   });
 }
 export async function createRule(rule: unknown): Promise<string> {
-  observability.incrementToolCall('actual.rules.create').catch(() => {});
+  observability.incrementToolCall('actual.rules.create').catch(() => { });
   return queueWriteOperation(async () => {
     const raw = await withConcurrency(() => retry(() => rawCreateRule(rule) as Promise<string | { id?: string }>, { retries: 2, backoffMs: 200 }));
     const id = normalizeToId(raw);
@@ -556,17 +577,17 @@ export async function createRule(rule: unknown): Promise<string> {
   });
 }
 export async function updateRule(id: string, fields: unknown): Promise<void> {
-  observability.incrementToolCall('actual.rules.update').catch(() => {});
+  observability.incrementToolCall('actual.rules.update').catch(() => { });
   return queueWriteOperation(async () => {
     // The Actual Budget API validation requires conditions and actions arrays to exist
     // We must fetch the existing rule and merge with the update fields
     const rules = await withConcurrency(() => retry(() => rawGetRules() as Promise<unknown[]>, { retries: 2, backoffMs: 200 }));
     const existingRule = (rules as any[]).find((r: any) => r.id === id);
-    
+
     if (!existingRule) {
       throw new Error(`Rule with id ${id} not found`);
     }
-    
+
     const fieldsObj = fields as any;
     const rule: any = {
       id,
@@ -575,46 +596,46 @@ export async function updateRule(id: string, fields: unknown): Promise<void> {
       conditions: fieldsObj.conditions ?? existingRule.conditions ?? [],
       actions: fieldsObj.actions ?? existingRule.actions ?? [],
     };
-    
+
     logger.debug(`[UPDATE RULE] Updating rule ${id} with merged fields: ${JSON.stringify(rule)}`);
-    
+
     await withConcurrency(() => retry(() => rawUpdateRule(rule) as Promise<void>, { retries: 0, backoffMs: 200 }));
     logger.debug(`[UPDATE RULE] Update completed for rule ${id}`);
   });
 }
 export async function deleteRule(id: string): Promise<void> {
-  observability.incrementToolCall('actual.rules.delete').catch(() => {});
+  observability.incrementToolCall('actual.rules.delete').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawDeleteRule(id) as Promise<void>, { retries: 0, backoffMs: 200 }));
   });
 }
 export async function setBudgetCarryover(month: string, categoryId: string, flag: boolean): Promise<void> {
-  observability.incrementToolCall('actual.budgets.setCarryover').catch(() => {});
+  observability.incrementToolCall('actual.budgets.setCarryover').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawSetBudgetCarryover(month, categoryId, flag) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function closeAccount(id: string): Promise<void> {
-  observability.incrementToolCall('actual.accounts.close').catch(() => {});
+  observability.incrementToolCall('actual.accounts.close').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawCloseAccount(id) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function reopenAccount(id: string): Promise<void> {
-  observability.incrementToolCall('actual.accounts.reopen').catch(() => {});
+  observability.incrementToolCall('actual.accounts.reopen').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawReopenAccount(id) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function getCategoryGroups(): Promise<unknown[]> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.category_groups.get').catch(() => {});
+    observability.incrementToolCall('actual.category_groups.get').catch(() => { });
     const raw = await withConcurrency(() => retry(() => rawGetCategoryGroups() as Promise<unknown[]>, { retries: 2, backoffMs: 200 }));
     return Array.isArray(raw) ? raw : [];
   });
 }
 export async function createCategoryGroup(group: unknown): Promise<string> {
-  observability.incrementToolCall('actual.category_groups.create').catch(() => {});
+  observability.incrementToolCall('actual.category_groups.create').catch(() => { });
   return queueWriteOperation(async () => {
     const raw = await withConcurrency(() => retry(() => rawCreateCategoryGroup(group) as Promise<string | { id?: string }>, { retries: 2, backoffMs: 200 }));
     const id = normalizeToId(raw);
@@ -622,44 +643,44 @@ export async function createCategoryGroup(group: unknown): Promise<string> {
   });
 }
 export async function updateCategoryGroup(id: string, fields: unknown): Promise<void> {
-  observability.incrementToolCall('actual.category_groups.update').catch(() => {});
+  observability.incrementToolCall('actual.category_groups.update').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawUpdateCategoryGroup(id, fields) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function deleteCategoryGroup(id: string): Promise<void> {
-  observability.incrementToolCall('actual.category_groups.delete').catch(() => {});
+  observability.incrementToolCall('actual.category_groups.delete').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawDeleteCategoryGroup(id) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function mergePayees(targetId: string, mergeIds: string[]): Promise<void> {
-  observability.incrementToolCall('actual.payees.merge').catch(() => {});
+  observability.incrementToolCall('actual.payees.merge').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawMergePayees(targetId, mergeIds) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function getPayeeRules(payeeId: string): Promise<unknown[]> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.payees.getPayeeRules').catch(() => {});
+    observability.incrementToolCall('actual.payees.getPayeeRules').catch(() => { });
     const raw = await withConcurrency(() => retry(() => rawGetPayeeRules(payeeId) as Promise<unknown[]>, { retries: 2, backoffMs: 200 }));
     return Array.isArray(raw) ? raw : [];
   });
 }
 export async function batchBudgetUpdates(fn: () => Promise<void>): Promise<void> {
-  observability.incrementToolCall('actual.budgets.batchUpdates').catch(() => {});
+  observability.incrementToolCall('actual.budgets.batchUpdates').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawBatchBudgetUpdates(fn) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function holdBudgetForNextMonth(month: string, categoryId: string): Promise<void> {
-  observability.incrementToolCall('actual.budgets.holdForNextMonth').catch(() => {});
+  observability.incrementToolCall('actual.budgets.holdForNextMonth').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawHoldBudgetForNextMonth(month, categoryId) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
 }
 export async function resetBudgetHold(month: string, categoryId: string): Promise<void> {
-  observability.incrementToolCall('actual.budgets.resetHold').catch(() => {});
+  observability.incrementToolCall('actual.budgets.resetHold').catch(() => { });
   return queueWriteOperation(async () => {
     await withConcurrency(() => retry(() => rawResetBudgetHold(month, categoryId) as Promise<void>, { retries: 2, backoffMs: 200 }));
   });
@@ -667,18 +688,27 @@ export async function resetBudgetHold(month: string, categoryId: string): Promis
 export async function runQuery(queryString: string | any): Promise<unknown> {
   try {
     return await withActualApi(async () => {
-      observability.incrementToolCall('actual.query.run').catch(() => {});
-      
+      observability.incrementToolCall('actual.query.run').catch(() => { });
+
       const executeQueryWithRetry = async (queryObj: unknown) => {
         try {
           return await rawRunQuery(queryObj) as Promise<unknown>;
         } catch (err: any) {
           const msg = err?.message || String(err);
-          if (msg.includes('No budget file is open')) {
+          if (msg.includes('No budget file is open') || msg.includes('budget is not open')) {
             logger.warn('[ADAPTER] Budget not open; re-initializing and retrying query');
-            await shutdownActualApi();
-            await initActualApiForOperation();
-            return await rawRunQuery(queryObj) as Promise<unknown>;
+            try {
+              await shutdownActualApi();
+              await initActualApiForOperation();
+              return await rawRunQuery(queryObj) as Promise<unknown>;
+            } catch (retryErr: any) {
+              const retryMsg = retryErr?.message || String(retryErr);
+              throw new Error(
+                `No budget is currently open and auto-recovery failed. ` +
+                `Call actual_budgets_getMonth first to open the budget before running queries. ` +
+                `Original error: ${retryMsg}`,
+              );
+            }
           }
           throw err;
         }
@@ -687,22 +717,134 @@ export async function runQuery(queryString: string | any): Promise<unknown> {
       try {
         // Import validation utilities
         const { validateQuery, formatValidationErrors } = await import('./query-validator.js');
-        
+
         // The Actual Budget runQuery expects an ActualQL query object with serialize() method
         // Import the q builder dynamically
         const api = await import('@actual-app/api');
         const q = (api as any).q;
-      
-      if (!q) {
-        throw new Error('ActualQL query builder not available. Ensure @actual-app/api is properly installed and the budget is loaded.');
-      }
-      
-      // If already a serialized query object, use it directly
-      if (typeof queryString === 'object' && queryString !== null) {
+
+        if (!q) {
+          throw new Error('ActualQL query builder not available. Ensure @actual-app/api is properly installed and the budget is loaded.');
+        }
+
+        // If already a serialized query object, use it directly
+        if (typeof queryString === 'object' && queryString !== null) {
+          try {
+            return await withConcurrency(async () => {
+              try {
+                return await executeQueryWithRetry(queryString);
+              } catch (err: any) {
+                // Catch errors from the query execution to prevent unhandled rejections
+                const msg = err?.message || String(err);
+                logger.error(`[ADAPTER] Query execution error: ${msg}`);
+                if (msg.includes('does not exist in table') || msg.includes('Field') || msg.includes('does not exist')) {
+                  throw new Error(`Invalid field in query: ${msg}`);
+                }
+                throw err;
+              }
+            });
+          } catch (error: any) {
+            throw new Error(`Query execution failed: ${error.message}`);
+          }
+        }
+
+        const trimmed = queryString.trim();
+        let query;
+
+        // Check for GraphQL-like query syntax: query Name { table(...) { fields } }
+        const graphqlMatch = trimmed.match(/^query\s+\w+\s*\{\s*(\w+)\s*\(([^)]*)\)\s*\{([^}]+)\}\s*\}$/is);
+
+        if (graphqlMatch) {
+          const [, tableName, argsStr, fieldsStr] = graphqlMatch;
+          query = q(tableName);
+
+          // Parse arguments (e.g., startDate: "2025-06-01", endDate: "2025-11-30")
+          if (argsStr.trim()) {
+            const args = argsStr.split(',').map((a: string) => a.trim());
+            for (const arg of args) {
+              const argMatch = arg.match(/^(\w+):\s*"([^"]+)"$/);
+              if (argMatch) {
+                const [, key, value] = argMatch;
+                // Map GraphQL args to ActualQL filters
+                if (key === 'startDate') {
+                  query = query.filter({ date: { $gte: value } });
+                } else if (key === 'endDate') {
+                  query = query.filter({ date: { $lte: value } });
+                } else {
+                  // Generic filter for other args
+                  query = query.filter({ [key]: value });
+                }
+              }
+            }
+          }
+
+          // Parse fields (including nested objects like account { id name })
+          const fieldNames = [];
+          const nestedFieldPattern = /(\w+)\s*\{[^}]+\}/g;
+          const simpleFields = fieldsStr.replace(nestedFieldPattern, '').split(/\s+/).filter((f: string) => f.trim());
+          fieldNames.push(...simpleFields.map((f: string) => f.trim()));
+
+          // Extract nested field names (e.g., account, payee, category)
+          let nestedMatch;
+          while ((nestedMatch = nestedFieldPattern.exec(fieldsStr)) !== null) {
+            fieldNames.push(nestedMatch[1]);
+          }
+
+          if (fieldNames.length > 0) {
+            query = query.select(fieldNames);
+          }
+        } else {
+          // Enhanced SQL-like parsing supporting WHERE, ORDER BY, and LIMIT
+          // Pattern: SELECT [fields] FROM table [WHERE conditions] [ORDER BY field ASC|DESC] [LIMIT n]
+          const sqlMatch = trimmed.match(/^SELECT\s+(.+?)\s+FROM\s+(\w+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER\s+BY\s+(\w+)(?:\s+(ASC|DESC))?)?(?:\s+LIMIT\s+(\d+))?$/is);
+
+          if (sqlMatch) {
+            const [, fields, tableName, whereClause, orderField, orderDir, limitStr] = sqlMatch;
+
+            // ✅ VALIDATE QUERY BEFORE EXECUTION
+            const validation = validateQuery(trimmed);
+            if (!validation.valid) {
+              const errorMsg = formatValidationErrors(validation);
+              throw new Error(`Invalid SQL query:\n${errorMsg}\n\nQuery: "${trimmed}"`);
+            }
+
+            query = q(tableName);
+
+            // Apply SELECT fields (if not *)
+            if (fields.trim() !== '*') {
+              // Strip SQL aliases (AS alias_name) since ActualQL doesn't support them
+              const fieldList = fields.split(',').map((f: string) => {
+                const field = f.trim();
+                // Remove "AS alias" part if present (case-insensitive)
+                return field.replace(/\s+AS\s+\w+$/i, '').trim();
+              });
+              query = query.select(fieldList);
+            }
+
+            // Apply WHERE conditions
+            if (whereClause) {
+              query = parseWhereClause(query, whereClause);
+            }
+
+            // Apply ORDER BY
+            if (orderField) {
+              query = query.orderBy({ [orderField]: orderDir?.toUpperCase() === 'DESC' ? 'desc' : 'asc' });
+            }
+
+            // Apply LIMIT
+            if (limitStr) {
+              query = query.limit(parseInt(limitStr));
+            }
+          } else {
+            // Assume it's just a table name
+            query = q(trimmed);
+          }
+        }
+
         try {
           return await withConcurrency(async () => {
             try {
-              return await executeQueryWithRetry(queryString);
+              return await executeQueryWithRetry(query);
             } catch (err: any) {
               // Catch errors from the query execution to prevent unhandled rejections
               const msg = err?.message || String(err);
@@ -714,154 +856,50 @@ export async function runQuery(queryString: string | any): Promise<unknown> {
             }
           });
         } catch (error: any) {
-          throw new Error(`Query execution failed: ${error.message}`);
-        }
-      }
-    
-    const trimmed = queryString.trim();
-    let query;
-    
-    // Check for GraphQL-like query syntax: query Name { table(...) { fields } }
-    const graphqlMatch = trimmed.match(/^query\s+\w+\s*\{\s*(\w+)\s*\(([^)]*)\)\s*\{([^}]+)\}\s*\}$/is);
-    
-    if (graphqlMatch) {
-      const [, tableName, argsStr, fieldsStr] = graphqlMatch;
-      query = q(tableName);
-      
-      // Parse arguments (e.g., startDate: "2025-06-01", endDate: "2025-11-30")
-      if (argsStr.trim()) {
-        const args = argsStr.split(',').map((a: string) => a.trim());
-        for (const arg of args) {
-          const argMatch = arg.match(/^(\w+):\s*"([^"]+)"$/);
-          if (argMatch) {
-            const [, key, value] = argMatch;
-            // Map GraphQL args to ActualQL filters
-            if (key === 'startDate') {
-              query = query.filter({ date: { $gte: value } });
-            } else if (key === 'endDate') {
-              query = query.filter({ date: { $lte: value } });
-            } else {
-              // Generic filter for other args
-              query = query.filter({ [key]: value });
-            }
+          // Enhance error messages with helpful context
+          const errorMsg = error?.message || String(error);
+
+          // If the error already contains formatted validation errors (with suggestions), preserve them
+          if (errorMsg.includes('Invalid SQL query:') && (errorMsg.includes('Available fields:') || errorMsg.includes('Available tables:'))) {
+            throw error; // Re-throw the well-formatted validation error as-is
           }
-        }
-      }
-      
-      // Parse fields (including nested objects like account { id name })
-      const fieldNames = [];
-      const nestedFieldPattern = /(\w+)\s*\{[^}]+\}/g;
-      const simpleFields = fieldsStr.replace(nestedFieldPattern, '').split(/\s+/).filter((f: string) => f.trim());
-      fieldNames.push(...simpleFields.map((f: string) => f.trim()));
-      
-      // Extract nested field names (e.g., account, payee, category)
-      let nestedMatch;
-      while ((nestedMatch = nestedFieldPattern.exec(fieldsStr)) !== null) {
-        fieldNames.push(nestedMatch[1]);
-      }
-      
-      if (fieldNames.length > 0) {
-        query = query.select(fieldNames);
-      }
-    } else {
-      // Enhanced SQL-like parsing supporting WHERE, ORDER BY, and LIMIT
-      // Pattern: SELECT [fields] FROM table [WHERE conditions] [ORDER BY field ASC|DESC] [LIMIT n]
-      const sqlMatch = trimmed.match(/^SELECT\s+(.+?)\s+FROM\s+(\w+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER\s+BY\s+(\w+)(?:\s+(ASC|DESC))?)?(?:\s+LIMIT\s+(\d+))?$/is);
-      
-      if (sqlMatch) {
-        const [, fields, tableName, whereClause, orderField, orderDir, limitStr] = sqlMatch;
-        
-        // ✅ VALIDATE QUERY BEFORE EXECUTION
-        const validation = validateQuery(trimmed);
-        if (!validation.valid) {
-          const errorMsg = formatValidationErrors(validation);
-          throw new Error(`Invalid SQL query:\n${errorMsg}\n\nQuery: "${trimmed}"`);
-        }
-        
-        query = q(tableName);
-        
-        // Apply SELECT fields (if not *)
-        if (fields.trim() !== '*') {
-          // Strip SQL aliases (AS alias_name) since ActualQL doesn't support them
-          const fieldList = fields.split(',').map((f: string) => {
-            const field = f.trim();
-            // Remove "AS alias" part if present (case-insensitive)
-            return field.replace(/\s+AS\s+\w+$/i, '').trim();
-          });
-          query = query.select(fieldList);
-        }
-        
-        // Apply WHERE conditions
-        if (whereClause) {
-          query = parseWhereClause(query, whereClause);
-        }
-        
-        // Apply ORDER BY
-        if (orderField) {
-          query = query.orderBy({ [orderField]: orderDir?.toUpperCase() === 'DESC' ? 'desc' : 'asc' });
-        }
-        
-        // Apply LIMIT
-        if (limitStr) {
-          query = query.limit(parseInt(limitStr));
-        }
-      } else {
-        // Assume it's just a table name
-        query = q(trimmed);
-      }
-    }
-    
-    try {
-      return await withConcurrency(async () => {
-        try {
-          return await executeQueryWithRetry(query);
-        } catch (err: any) {
-          // Catch errors from the query execution to prevent unhandled rejections
-          const msg = err?.message || String(err);
-          logger.error(`[ADAPTER] Query execution error: ${msg}`);
-          if (msg.includes('does not exist in table') || msg.includes('Field') || msg.includes('does not exist')) {
-            throw new Error(`Invalid field in query: ${msg}`);
+
+          if (errorMsg.includes('does not exist in the schema') || errorMsg.includes('Invalid field in query') || errorMsg.includes('does not exist in table')) {
+            throw new Error(`Table or field does not exist. Query: "${trimmed}". Available tables: transactions, accounts, categories, payees, category_groups, schedules, rules. Use dot notation for joins (e.g., payee.name, category.name). Original error: ${errorMsg}`);
           }
-          throw err;
+
+          // Re-throw with original error if no specific handling
+          throw error;
         }
-      });
-    } catch (error: any) {
-      // Enhance error messages with helpful context
-      const errorMsg = error?.message || String(error);
-      
-      // If the error already contains formatted validation errors (with suggestions), preserve them
-      if (errorMsg.includes('Invalid SQL query:') && (errorMsg.includes('Available fields:') || errorMsg.includes('Available tables:'))) {
-        throw error; // Re-throw the well-formatted validation error as-is
+      } catch (error: any) {
+        // Outer catch for query parsing errors
+        const errorMsg = error?.message || String(error);
+
+        if (errorMsg.includes('tableName') || errorMsg.includes('expandStar') || errorMsg.includes('Cannot read properties of undefined')) {
+          throw new Error(`SQL query parsing failed. The Actual Budget query engine has limitations with complex SQL features like COUNT(*), SUM(), GROUP BY, and aggregate functions. Try using simpler queries or ActualQL format instead. See https://actualbudget.org/docs/api/actual-ql/ for supported syntax. Error: ${errorMsg}`);
+        }
+
+        throw error;
       }
-      
-      if (errorMsg.includes('does not exist in the schema') || errorMsg.includes('Invalid field in query') || errorMsg.includes('does not exist in table')) {
-        throw new Error(`Table or field does not exist. Query: "${trimmed}". Available tables: transactions, accounts, categories, payees, category_groups, schedules, rules. Use dot notation for joins (e.g., payee.name, category.name). Original error: ${errorMsg}`);
-      }
-      
-      // Re-throw with original error if no specific handling
-      throw error;
-    }
-    } catch (error: any) {
-      // Outer catch for query parsing errors
-      const errorMsg = error?.message || String(error);
-      
-      if (errorMsg.includes('tableName') || errorMsg.includes('expandStar') || errorMsg.includes('Cannot read properties of undefined')) {
-        throw new Error(`SQL query parsing failed. The Actual Budget query engine has limitations with complex SQL features like COUNT(*), SUM(), GROUP BY, and aggregate functions. Try using simpler queries or ActualQL format instead. See https://actualbudget.org/docs/api/actual-ql/ for supported syntax. Error: ${errorMsg}`);
-      }
-      
-      throw error;
-    }
-  });
+    });
   } catch (error: any) {
     // Top-level catch to ensure no unhandled rejections escape
     const errorMsg = error?.message || String(error);
     logger.error(`[ADAPTER] Query execution failed: ${errorMsg}`);
-    
+
     // If the error already contains formatted validation errors with suggestions, preserve them
     if (errorMsg.includes('Invalid SQL query:') && (errorMsg.includes('Available fields:') || errorMsg.includes('Available tables:'))) {
       throw error; // Re-throw the well-formatted validation error without wrapping
     }
-    
+
+    // Provide clear remediation for "no budget open" errors
+    if (errorMsg.includes('No budget') || errorMsg.includes('budget is not open') || errorMsg.includes('not open')) {
+      throw new Error(
+        `No budget is currently open. Call actual_budgets_getMonth first to load the budget before running queries or other budget-scoped operations. ` +
+        `Original error: ${errorMsg}`,
+      );
+    }
+
     throw new Error(`Query execution failed: ${errorMsg}`);
   }
 }
@@ -870,10 +908,10 @@ export async function runQuery(queryString: string | any): Promise<unknown> {
 function parseWhereClause(query: any, whereClause: string): any {
   // Split by AND (simple parser - doesn't handle OR or nested conditions)
   const conditions = whereClause.split(/\s+AND\s+/i);
-  
+
   for (const condition of conditions) {
     const trimmedCondition = condition.trim();
-    
+
     // Handle IN clause: field IN (value1, value2, ...)
     const inMatch = trimmedCondition.match(/^(\w+)\s+IN\s+\((.+)\)$/i);
     if (inMatch) {
@@ -887,13 +925,13 @@ function parseWhereClause(query: any, whereClause: string): any {
       query = query.filter({ [field]: { $oneof: values } });
       continue;
     }
-    
+
     // Handle comparison operators: field >= value, field <= value, field = value, etc.
     const compMatch = trimmedCondition.match(/^(\w+)\s*(>=|<=|>|<|=|!=)\s*(.+)$/);
     if (compMatch) {
       const [, field, operator, valueStr] = compMatch;
       const value = valueStr.trim().replace(/^['"]|['"]$/g, '');
-      
+
       // Map SQL operators to ActualQL operators
       const operatorMap: { [key: string]: string } = {
         '>=': '$gte',
@@ -903,13 +941,13 @@ function parseWhereClause(query: any, whereClause: string): any {
         '=': '$eq',
         '!=': '$ne',
       };
-      
+
       const actualOp = operatorMap[operator];
       if (actualOp) {
         // Try to parse as number if possible
         const numValue = Number(value);
         const finalValue = isNaN(numValue) ? value : numValue;
-        
+
         if (actualOp === '$eq') {
           // Simple equality can use direct field: value
           query = query.filter({ [field]: finalValue });
@@ -919,30 +957,30 @@ function parseWhereClause(query: any, whereClause: string): any {
       }
     }
   }
-  
+
   return query;
 }
 export async function runBankSync(accountId?: string): Promise<void> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.bank.sync').catch(() => {});
-    
+    observability.incrementToolCall('actual.bank.sync').catch(() => { });
+
     try {
       await withConcurrency(() => retry(() => rawRunBankSync(accountId ? { accountId } : undefined) as Promise<void>, { retries: 2, backoffMs: 200 }));
     } catch (error: any) {
       const errorMsg = error?.message || String(error);
-      
+
       // Provide helpful error message for common cases
       if (errorMsg.includes('No bank account') || errorMsg.includes('not configured') || errorMsg.includes('not linked') || !errorMsg || errorMsg === '{}') {
         throw new Error(`Bank sync failed: The ${accountId ? 'specified account is' : 'accounts are'} not configured for bank sync. To use bank sync, you must first link your account(s) with a supported provider (GoCardless or SimpleFIN) in the Actual Budget UI. See https://actualbudget.org/docs/advanced/bank-sync for setup instructions.`);
       }
-      
+
       throw new Error(`Bank sync failed: ${errorMsg}`);
     }
   });
 }
 export async function getBudgets(): Promise<unknown[]> {
   return withActualApi(async () => {
-    observability.incrementToolCall('actual.budgets.getAll').catch(() => {});
+    observability.incrementToolCall('actual.budgets.getAll').catch(() => { });
     const raw = await withConcurrency(() => retry(() => rawGetBudgets() as Promise<unknown>, { retries: 2, backoffMs: 200 }));
     return Array.isArray(raw) ? raw : [];
   });

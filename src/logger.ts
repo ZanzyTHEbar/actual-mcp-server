@@ -44,6 +44,43 @@ function safeStringify(obj: unknown, maxLen = 2000) {
   }
 }
 
+const SENSITIVE_KEYS = [
+  'authorization',
+  'cookie',
+  'set-cookie',
+  'password',
+  'token',
+  'secret',
+  'sync_id',
+  'syncid',
+  'api_key',
+  'apikey',
+];
+
+function shouldRedactKey(key: string): boolean {
+  const normalized = key.toLowerCase();
+  return SENSITIVE_KEYS.some((k) => normalized.includes(k));
+}
+
+function sanitizeForLog(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForLog(item));
+  }
+  if (value && typeof value === 'object') {
+    const input = value as Record<string, unknown>;
+    const output: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(input)) {
+      if (shouldRedactKey(key)) {
+        output[key] = '[REDACTED]';
+      } else {
+        output[key] = sanitizeForLog(val);
+      }
+    }
+    return output;
+  }
+  return value;
+}
+
 const transports: winston.transport[] = [];
 
 // file transports when enabled (capture debug+)
@@ -100,8 +137,8 @@ export function logTransportWithDirection(
     clientIp,
     method: req.method,
     url: req.originalUrl,
-    headers: req.headers,
-    payload: safeStringify(data, 2000),
+    headers: sanitizeForLog(req.headers),
+    payload: safeStringify(sanitizeForLog(data), 2000),
   };
   logger.debug(safeStringify(meta, 4000));
 }

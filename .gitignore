@@ -86,3 +86,4 @@ playwright-report/
 
 # IDE
 .idea/
+.cursor/

@@ -1,9 +1,6 @@
 # Docker Compose configuration for E2E testing
 # This spins up a complete stack: Actual Budget server + MCP server + test runner
 # Usage: docker-compose -f docker-compose.test.yaml up --abort-on-container-exit
-
-version: '3.8'
-
 services:
   # Actual Budget server for testing
   actual-budget-test:
@@ -67,6 +64,7 @@ services:
     environment:
       - ACTUAL_SERVER_URL=http://actual-budget-test:5006
       - ACTUAL_PASSWORD=test123
+      - MAX_CONCURRENT_SESSIONS=10
       - MCP_BRIDGE_PORT=3600
       - MCP_BRIDGE_DATA_DIR=/app/data
       - LOG_LEVEL=info
