@@ -16,11 +16,10 @@ import {
   SearchIndex,
   HybridSearchEngine,
   getResponseCache,
-  createEmbeddingProvider,
+  getSearchRuntime,
 } from '../lib/search/index.js';
 import type { EmbeddingProvider } from '../lib/search/index.js';
 import { isSearchIndexSynced, markSearchIndexSynced } from '../lib/search/syncState.js';
-import { buildTransactionText } from '../lib/search/EmbeddingPipeline.js';
 import type {
   IndexedTransaction,
   RefAccount,
@@ -28,8 +27,25 @@ import type {
   RefPayee,
   HybridSearchQuery,
 } from '../lib/search/index.js';
-import config from '../config.js';
 import logger from '../logger.js';
+
+/**
+ * The Actual Budget `getTransactions()` API returns richer data than the
+ * generated OpenAPI types suggest. This interface captures the real runtime
+ * shape so we can map to IndexedTransaction without `any` casts.
+ */
+interface ActualRawTransaction {
+  id?: string;
+  date?: string;
+  amount?: number;
+  notes?: string;
+  payee?: string;
+  category?: string;
+  account?: string;
+  transfer_id?: string;
+  cleared?: boolean | number;
+  [key: string]: unknown;
+}
 
 // ---------------------------------------------------------------------------
 // Input schema
@@ -61,52 +77,7 @@ const InputSchema = z.object({
     ),
 });
 
-// ---------------------------------------------------------------------------
-// Singleton index + engine (per worker process)
-// ---------------------------------------------------------------------------
-
-let _index: SearchIndex | null = null;
-let _engine: HybridSearchEngine | null = null;
-let _provider: EmbeddingProvider | null = null;
-
-async function getEngine(): Promise<{ index: SearchIndex; engine: HybridSearchEngine }> {
-  if (_index && _engine) {
-    return { index: _index, engine: _engine };
-  }
-
-  // Create embedding provider via factory (handles config + fallback chain)
-  if (!_provider) {
-    _provider = await createEmbeddingProvider();
-  }
-
-  const dataDir = process.env.SEARCH_INDEX_DIR
-    || process.env.MCP_BRIDGE_DATA_DIR
-    || config.MCP_BRIDGE_DATA_DIR
-    || './actual-data';
-
-  // Inject provider into SearchIndex via the EmbeddingFunctions interface
-  const embeddingFns = _provider
-    ? {
-      embed: (text: string) => _provider!.embed(text),
-      buildTransactionText,
-      getModelInfo: () => {
-        const info = _provider!.getInfo();
-        return { model: info.model, dimensions: info.dimensions, loaded: info.available };
-      },
-    }
-    : undefined; // Falls back to default EmbeddingPipeline in SearchIndex
-
-  _index = new SearchIndex(dataDir, embeddingFns);
-  _index.open();
-
-  // Inject provider embed fn into HybridSearchEngine
-  _engine = new HybridSearchEngine(
-    () => _index!.getDb(),
-    _provider ? (text: string) => _provider!.embed(text) : undefined,
-  );
-
-  return { index: _index, engine: _engine };
-}
+// No local singletons — use shared search runtime from searchRuntime.ts
 
 /**
  * Sync the search index from Actual Budget data.
@@ -119,14 +90,13 @@ async function ensureSynced(index: SearchIndex): Promise<void> {
   const startMs = Date.now();
   logger.info('[HybridSearch] Syncing search index from Actual Budget…');
 
-  // Fetch reference data (these are cached by ResponseCache too)
   const [accounts, categories, payees] = await Promise.all([
     cache.getOrFetch<RefAccount[]>('ref:accounts', {
       ttlMs: 10 * 60_000,
       tags: ['accounts'],
       fetcher: async () => {
         const raw = await adapter.getAccounts();
-        return (raw as any[]).map((a: any) => ({ id: a.id, name: a.name ?? '' }));
+        return raw.filter((a) => a.id).map((a) => ({ id: a.id!, name: a.name ?? '' }));
       },
     }),
     cache.getOrFetch<RefCategory[]>('ref:categories', {
@@ -134,10 +104,10 @@ async function ensureSynced(index: SearchIndex): Promise<void> {
       tags: ['categories'],
       fetcher: async () => {
         const raw = await adapter.getCategories();
-        return (raw as any[]).map((c: any) => ({
-          id: c.id,
+        return raw.filter((c) => c.id).map((c) => ({
+          id: c.id!,
           name: c.name ?? '',
-          group_id: c.group_id ?? '',
+          group_id: c.parentId ?? '',
           group_name: '',
         }));
       },
@@ -147,7 +117,7 @@ async function ensureSynced(index: SearchIndex): Promise<void> {
       tags: ['payees'],
       fetcher: async () => {
         const raw = await adapter.getPayees();
-        return (raw as any[]).map((p: any) => ({ id: p.id, name: p.name ?? '' }));
+        return raw.filter((p) => p.id).map((p) => ({ id: p.id!, name: p.name ?? '' }));
       },
     }),
   ]);
@@ -162,24 +132,25 @@ async function ensureSynced(index: SearchIndex): Promise<void> {
   index.populateCategories(categories);
   index.populatePayees(payees);
 
-  // Fetch all transactions (no account filter, no date filter → everything)
-  const rawTxns = await adapter.getTransactions(undefined, undefined, undefined);
+  // Fetch all transactions. Runtime returns more fields than the generated type.
+  const rawTxns = await adapter.getTransactions(undefined, undefined, undefined) as unknown as ActualRawTransaction[];
 
-  // Map to IndexedTransaction with denormalized names
-  const indexed: IndexedTransaction[] = (rawTxns as any[]).map((t: any) => ({
-    id: t.id,
-    date: t.date ?? '',
-    amount: t.amount ?? 0,
-    notes: t.notes ?? '',
-    payee_id: t.payee ?? '',
-    payee_name: payeeMap.get(t.payee) ?? '',
-    category_id: t.category ?? '',
-    category_name: categoryMap.get(t.category) ?? '',
-    account_id: t.account ?? '',
-    account_name: accountMap.get(t.account) ?? '',
-    is_transfer: Boolean(t.transfer_id),
-    cleared: Boolean(t.cleared),
-  }));
+  const indexed: IndexedTransaction[] = rawTxns
+    .filter((t): t is ActualRawTransaction & { id: string } => Boolean(t.id))
+    .map((t) => ({
+      id: t.id,
+      date: t.date ?? '',
+      amount: t.amount ?? 0,
+      notes: t.notes ?? '',
+      payee_id: t.payee ?? '',
+      payee_name: payeeMap.get(t.payee ?? '') ?? '',
+      category_id: t.category ?? '',
+      category_name: categoryMap.get(t.category ?? '') ?? '',
+      account_id: t.account ?? '',
+      account_name: accountMap.get(t.account ?? '') ?? '',
+      is_transfer: Boolean(t.transfer_id),
+      cleared: Boolean(t.cleared),
+    }));
 
   // Index with embeddings (incremental — skips unchanged rows)
   const wrote = await index.indexTransactions(indexed);
@@ -214,10 +185,12 @@ const tool: ToolDefinition = {
 
     let index: SearchIndex;
     let engine: HybridSearchEngine;
+    let provider: EmbeddingProvider | null;
     try {
-      const eng = await getEngine();
-      index = eng.index;
-      engine = eng.engine;
+      const runtime = await getSearchRuntime();
+      index = runtime.index;
+      engine = runtime.engine;
+      provider = runtime.provider;
     } catch (err) {
       logger.error('[HybridSearch] Failed to initialize search engine:', err);
       return {
@@ -245,7 +218,7 @@ const tool: ToolDefinition = {
 
     // Auto-downgrade search mode if embeddings are unavailable
     let effectiveMode = input.mode;
-    const embeddingReady = _provider?.isAvailable() ?? false;
+    const embeddingReady = provider?.isAvailable() ?? false;
     if (!embeddingReady && (effectiveMode === 'hybrid' || effectiveMode === 'vector')) {
       logger.warn(
         `[HybridSearch] Embedding provider unavailable — downgrading "${effectiveMode}" to "fulltext"`,
@@ -284,7 +257,7 @@ const tool: ToolDefinition = {
       mode: effectiveMode,
       timing: response.timing,
       indexStats: index.getStats(),
-      embeddingProvider: _provider?.getInfo() ?? { provider: 'none', available: false },
+      embeddingProvider: provider?.getInfo() ?? { provider: 'none', available: false },
     };
   }),
 };

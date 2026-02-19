@@ -1,26 +1,16 @@
 /**
  * actual_search_index_info — expose search index health, stats, and
- * embedding provider information so MCP clients / agents can inspect
- * system readiness before issuing search queries.
+ * embedding provider information. Uses the shared search runtime singleton.
  */
 
 import { z } from 'zod';
 import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
-import { SearchIndex, createEmbeddingProvider } from '../lib/search/index.js';
+import { getSearchRuntime, getEmbeddingProvider } from '../lib/search/index.js';
 import { isSearchIndexSynced } from '../lib/search/syncState.js';
-import config from '../config.js';
 import logger from '../logger.js';
 
-// ---------------------------------------------------------------------------
-// Input schema — no required inputs
-// ---------------------------------------------------------------------------
-
 const InputSchema = z.object({}).optional();
-
-// ---------------------------------------------------------------------------
-// Tool definition
-// ---------------------------------------------------------------------------
 
 const tool: ToolDefinition = {
   name: 'actual_search_index_info',
@@ -30,32 +20,24 @@ const tool: ToolDefinition = {
     'Useful for debugging search issues or verifying index health before querying.',
   inputSchema: InputSchema,
   call: wrapToolCall(async (_args: unknown, _meta?: unknown) => {
-    const dataDir = process.env.SEARCH_INDEX_DIR
-      || process.env.MCP_BRIDGE_DATA_DIR
-      || config.MCP_BRIDGE_DATA_DIR
-      || './actual-data';
-
     let indexStats: unknown = {};
+    let providerInfo: unknown = { provider: 'none', available: false };
+
     try {
-      const idx = new SearchIndex(dataDir);
-      idx.open();
-      indexStats = idx.getStats();
-      idx.close();
+      const { index, provider } = await getSearchRuntime();
+      indexStats = index.getStats();
+      if (provider) {
+        providerInfo = provider.getInfo();
+      }
     } catch (err) {
       indexStats = {
         error: `Failed to read index: ${err instanceof Error ? err.message : err}`,
       };
-    }
-
-    // Get provider info (don't init if not already loaded — just report)
-    let providerInfo: unknown = { provider: 'none', available: false };
-    try {
-      const provider = await createEmbeddingProvider();
+      // Try to get provider info even if index failed
+      const provider = getEmbeddingProvider();
       if (provider) {
         providerInfo = provider.getInfo();
       }
-    } catch {
-      providerInfo = { provider: 'unknown', available: false, error: 'Failed to query provider' };
     }
 
     return {
@@ -64,7 +46,7 @@ const tool: ToolDefinition = {
       indexStats,
       embeddingProvider: providerInfo,
       config: {
-        SEARCH_INDEX_DIR: dataDir,
+        SEARCH_INDEX_DIR: process.env.SEARCH_INDEX_DIR ?? process.env.MCP_BRIDGE_DATA_DIR ?? './actual-data',
         SEARCH_ENABLED: process.env.SEARCH_ENABLED ?? 'true',
         EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER ?? 'local',
         EMBEDDING_MODEL: process.env.EMBEDDING_MODEL ?? process.env.SEARCH_EMBEDDING_MODEL ?? 'default',

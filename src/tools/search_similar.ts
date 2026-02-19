@@ -2,22 +2,40 @@
  * actual_search_similar — given a transaction ID, find the N most similar
  * transactions by vector cosine distance.
  *
- * This enables agents to discover spending patterns, recurring charges,
- * and related transactions without writing complex filters.
+ * Uses the shared search runtime singleton instead of creating throwaway instances.
  */
 
 import { z } from 'zod';
 import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
-import { SearchIndex, createEmbeddingProvider } from '../lib/search/index.js';
-import type { EmbeddingProvider } from '../lib/search/index.js';
+import { getSearchRuntime } from '../lib/search/index.js';
 import { isSearchIndexSynced } from '../lib/search/syncState.js';
-import config from '../config.js';
+import type { DatabaseInstance } from '../lib/search/types.js';
 import logger from '../logger.js';
 
-// ---------------------------------------------------------------------------
-// Input schema
-// ---------------------------------------------------------------------------
+interface RefRow {
+  id: string;
+  payee_name: string | null;
+  category_name: string | null;
+  account_name: string | null;
+  amount: number;
+  date: string;
+  notes: string | null;
+  embedding: Uint8Array | null;
+}
+
+interface SimilarRow {
+  id: string;
+  date: string;
+  amount: number;
+  notes: string | null;
+  payee_name: string | null;
+  category_name: string | null;
+  account_name: string | null;
+  is_transfer: number;
+  cleared: number;
+  distance: number;
+}
 
 const InputSchema = z.object({
   transactionId: z
@@ -35,10 +53,6 @@ const InputSchema = z.object({
     .describe('If true, exclude transactions with the same payee'),
 });
 
-// ---------------------------------------------------------------------------
-// Tool definition
-// ---------------------------------------------------------------------------
-
 const tool: ToolDefinition = {
   name: 'actual_search_similar',
   description:
@@ -49,51 +63,37 @@ const tool: ToolDefinition = {
   call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
 
-    const dataDir = process.env.SEARCH_INDEX_DIR
-      || process.env.MCP_BRIDGE_DATA_DIR
-      || config.MCP_BRIDGE_DATA_DIR
-      || './actual-data';
-
-    // Open a read-only handle to the search index
-    const idx = new SearchIndex(dataDir);
-    idx.open();
-    const db = idx.getDb();
+    let db: DatabaseInstance;
+    try {
+      const { index } = await getSearchRuntime();
+      db = index.getDb();
+    } catch (err) {
+      logger.error('[SearchSimilar] Failed to get search runtime:', err);
+      return { error: 'Search engine not available.', results: [] };
+    }
 
     if (!isSearchIndexSynced()) {
-      idx.close();
       return {
         error: 'Search index not yet synced. Run actual_hybrid_search first to populate the index.',
         results: [],
       };
     }
 
-    // Look up the reference transaction's embedding
     const refRow = db.prepare(
       'SELECT id, payee_name, category_name, account_name, amount, date, notes, embedding FROM transactions WHERE id = ?',
-    ).get(input.transactionId) as any;
+    ).get(input.transactionId) as RefRow | undefined;
 
     if (!refRow) {
-      idx.close();
-      return {
-        error: `Transaction "${input.transactionId}" not found in search index.`,
-        results: [],
-      };
+      return { error: `Transaction "${input.transactionId}" not found in search index.`, results: [] };
     }
 
     if (!refRow.embedding) {
-      idx.close();
-      return {
-        error: `Transaction "${input.transactionId}" has no embedding (vector search unavailable for this row).`,
-        results: [],
-      };
+      return { error: `Transaction "${input.transactionId}" has no embedding.`, results: [] };
     }
 
-    // Find similar by cosine distance (brute-force)
-    const excludePayeeClause = input.excludeSamePayee
-      ? 'AND t.payee_name != ?'
-      : '';
-    const queryParams: any[] = [refRow.embedding, input.transactionId];
-    if (input.excludeSamePayee) queryParams.push(refRow.payee_name);
+    const excludePayeeClause = input.excludeSamePayee ? 'AND t.payee_name != ?' : '';
+    const queryParams: (Uint8Array | string | number)[] = [refRow.embedding, input.transactionId];
+    if (input.excludeSamePayee) queryParams.push(refRow.payee_name ?? '');
     queryParams.push(input.limit);
 
     const sql = `
@@ -111,24 +111,7 @@ const tool: ToolDefinition = {
     `;
 
     try {
-      const rows = db.prepare(sql).all(...queryParams) as any[];
-
-      const results = rows.map((r: any) => ({
-        id: r.id,
-        date: r.date,
-        amount: r.amount,
-        amount_display: `$${(Math.abs(r.amount) / 100).toFixed(2)}`,
-        type: r.amount < 0 ? 'expense' : 'income',
-        notes: r.notes,
-        payee_name: r.payee_name,
-        category_name: r.category_name,
-        account_name: r.account_name,
-        is_transfer: Boolean(r.is_transfer),
-        cleared: Boolean(r.cleared),
-        similarity: 1 - r.distance, // Convert distance to similarity score [0, 1]
-      }));
-
-      idx.close();
+      const rows = db.prepare(sql).all(...queryParams) as SimilarRow[];
 
       return {
         referenceTransaction: {
@@ -139,11 +122,23 @@ const tool: ToolDefinition = {
           amount: refRow.amount,
           date: refRow.date,
         },
-        results,
-        totalMatched: results.length,
+        results: rows.map((r) => ({
+          id: r.id,
+          date: r.date,
+          amount: r.amount,
+          amount_display: `$${(Math.abs(r.amount) / 100).toFixed(2)}`,
+          type: r.amount < 0 ? 'expense' : 'income',
+          notes: r.notes,
+          payee_name: r.payee_name,
+          category_name: r.category_name,
+          account_name: r.account_name,
+          is_transfer: Boolean(r.is_transfer),
+          cleared: Boolean(r.cleared),
+          similarity: 1 - r.distance,
+        })),
+        totalMatched: rows.length,
       };
     } catch (err) {
-      idx.close();
       logger.error('[SearchSimilar] Query failed:', err);
       return {
         error: `Vector similarity query failed: ${err instanceof Error ? err.message : err}`,
