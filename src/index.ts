@@ -383,7 +383,8 @@ export { };
         SERVER_DESCRIPTION,
         SERVER_INSTRUCTIONS,
         toolSchemas,
-        version
+        version,
+        authProvider,
       );
     }
 

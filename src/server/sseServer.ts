@@ -11,6 +11,9 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import config from '../config.js';
 import { sessionWorkerManager } from '../lib/SessionWorkerManager.js';
 import { toTextResult } from '../lib/toolResult.js';
+import type { AuthProvider, AuthIdentity } from '../auth/types.js';
+import { createAuthMiddleware, getIdentityFromLocals } from '../auth/auth-middleware.js';
+import { requestContext } from '../lib/requestContext.js';
 
 export async function startSseServer(
   mcp: ActualMCPConnection,
@@ -21,12 +24,21 @@ export async function startSseServer(
   serverDescription: string,
   serverInstructions: string,
   toolSchemas: Record<string, unknown>,
-  version: string
+  version: string,
+  authProvider?: AuthProvider | null,
 ) {
   const app = express();
   const httpServer = createServer(app);
 
   app.use(express.json());
+
+  const resolvedAuthProvider = authProvider ?? null;
+  if (resolvedAuthProvider) {
+    app.use(createAuthMiddleware(resolvedAuthProvider, ['/health', '/metrics']));
+    logger.info(`[SSE Auth] ${resolvedAuthProvider.name.toUpperCase()} auth middleware mounted`);
+  }
+
+  const sessionIdentities = new Map<string, AuthIdentity>();
 
   app.use((req, res, next) => {
     logger.debug(`HTTP ${req.method} ${req.originalUrl} from ${req.ip || req.connection.remoteAddress}`);
@@ -39,9 +51,8 @@ export async function startSseServer(
   // safe fallback if index didn't provide implementedTools
   const toolsList: string[] = Array.isArray(implementedTools) ? implementedTools : [];
 
-  // Authentication middleware
   const authenticateRequest = (req: Request, res: Response): boolean => {
-    // If MCP_SSE_AUTHORIZATION is not configured, allow all requests
+    if (resolvedAuthProvider) return true;
     if (!config.MCP_SSE_AUTHORIZATION) {
       return true;
     }
@@ -202,16 +213,20 @@ export async function startSseServer(
       const transport = new SSEServerTransport(ssePath, res);
       const sessionId = transport.sessionId;
       
-      // Store the transport
+      const initIdentity = getIdentityFromLocals(res);
+      if (initIdentity) {
+        sessionIdentities.set(sessionId, initIdentity);
+        logger.info(`[SSE] Bound identity ${initIdentity.userId} to session ${sessionId}`);
+      }
+      
       transports[sessionId] = transport;
 
-      // Initialize worker session for this SSE connection
       await sessionWorkerManager.createSession(sessionId);
 
-      // Set up onclose handler
       transport.onclose = async () => {
         logger.info(`❌ SSE client disconnected (session: ${sessionId}) from ${clientIp}`);
         delete transports[sessionId];
+        sessionIdentities.delete(sessionId);
         await sessionWorkerManager.closeSession(sessionId);
       };
 
@@ -261,11 +276,22 @@ export async function startSseServer(
       return;
     }
 
+    const reqIdentity = getIdentityFromLocals(res) || sessionIdentities.get(sessionId);
+    if (resolvedAuthProvider && reqIdentity && sessionIdentities.has(sessionId)) {
+      const boundIdentity = sessionIdentities.get(sessionId)!;
+      if (boundIdentity.userId !== reqIdentity.userId) {
+        logger.warn(`[SSE Auth] Identity mismatch: session bound to ${boundIdentity.userId}, request from ${reqIdentity.userId}`);
+        res.status(403).json({ error: 'Forbidden: session belongs to a different user' });
+        return;
+      }
+    }
+
     logger.debug(`[SSE] Received POST for session ${sessionId} from ${clientIp}`);
     
     try {
-      // Let the transport handle the message
-      await transport.handlePostMessage(req, res, req.body);
+      await requestContext.run({ sessionId, identity: reqIdentity }, async () => {
+        await transport.handlePostMessage(req, res, req.body);
+      });
     } catch (error) {
       logger.error(`[SSE] Error handling POST message:`, error);
       if (!res.headersSent) {
@@ -286,7 +312,9 @@ export async function startSseServer(
 
   httpServer.listen(port, () => {
     logger.info(`🌐 SSE MCP server listening on http://localhost:${port}${ssePath}`);
-    if (config.MCP_SSE_AUTHORIZATION) {
+    if (resolvedAuthProvider) {
+      logger.info(`🔒 SSE authentication enabled (provider: ${resolvedAuthProvider.name})`);
+    } else if (config.MCP_SSE_AUTHORIZATION) {
       logger.info(`🔒 SSE authentication enabled (Bearer token required)`);
     } else {
       logger.warn(`⚠️  SSE authentication disabled (no MCP_SSE_AUTHORIZATION set)`);
