@@ -2,7 +2,6 @@ import { parentPort, workerData } from 'worker_threads';
 import logger from '../logger.js';
 import actualToolsManager from '../actualToolsManager.js';
 import { ensureCallToolResult } from '../lib/toolResult.js';
-import { createEmbeddingProvider } from '../lib/search/providers/index.js';
 
 type WorkerMessage =
   | { type: 'executeTool'; requestId: string; toolName: string; args: unknown }
@@ -24,17 +23,6 @@ async function ensureInitialized(): Promise<void> {
   try {
     await actualToolsManager.initialize();
     initialized = true;
-
-    // Background warm-up: pre-load embedding model so the first search
-    // call doesn't pay the model download + init latency (~2-30s).
-    // Fire-and-forget — failures are handled gracefully by the provider.
-    if (process.env.SEARCH_ENABLED !== 'false') {
-      createEmbeddingProvider().catch((err) => {
-        logger.warn(
-          `[Worker] Background embedding warm-up failed: ${err instanceof Error ? err.message : err}`,
-        );
-      });
-    }
   } catch (err) {
     initError = err instanceof Error ? err : new Error(String(err));
     throw initError;
