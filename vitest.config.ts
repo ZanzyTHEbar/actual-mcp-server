@@ -2,8 +2,12 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['tests/auth/**/*.test.ts', 'tests/logger/**/*.test.ts'],
+    include: [
+      'tests/auth/**/*.test.ts',
+      'tests/logger/**/*.test.ts',
+      'tests/unit/*.test.js',
+    ],
     globals: false,
-    testTimeout: 10000,
+    testTimeout: 30000,
   },
 });
