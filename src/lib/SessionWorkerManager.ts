@@ -4,8 +4,10 @@ import fs from 'fs';
 import { randomUUID } from 'crypto';
 import logger from '../logger.js';
 import config from '../config.js';
-import { ensureCallToolResult } from './toolResult.js';
+import { ensureCallToolResult, toTextResult } from './toolResult.js';
 import { WriteCoordinator } from './WriteCoordinator.js';
+import { requestContext } from './requestContext.js';
+import { canAccessBudget } from '../auth/budget-acl.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 type PendingRequest = {
@@ -133,6 +135,19 @@ export class SessionWorkerManager {
     const info = this.workers.get(sessionId);
     if (!info) throw new Error(`Session ${sessionId} not initialized`);
     info.lastActivity = Date.now();
+
+    // Budget ACL enforcement: when identity exists, deny if user lacks budget access
+    const identity = requestContext.getStore()?.identity;
+    if (identity) {
+      const budgetSyncId = config.ACTUAL_BUDGET_SYNC_ID;
+      if (!canAccessBudget(identity, budgetSyncId)) {
+        logger.warn(`[ACL] Access denied: user=${identity.userId} budget=${budgetSyncId}`);
+        return toTextResult(
+          { message: 'Forbidden: you do not have access to this budget' },
+          { isError: true }
+        );
+      }
+    }
 
     const isWrite = this.isWriteTool(toolName);
     const keys = isWrite ? uniqueKeys(this.getWriteKeys(toolName, args)) : [];
