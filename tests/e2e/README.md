@@ -222,4 +222,4 @@ These rules apply to everyone adding or modifying tests in this directory.
 | Limitation | Detail |
 |------------|--------|
 | 4 skipped transaction tests | `actual_transactions_get/update/update_batch/delete` depend on `testContext.transactionId` which `actual_transactions_create` can't capture in the CI test budget (budget returns "ID not available"). Pre-existing; not a regression. |
-| `budgets_list_available` / `budgets_switch` excluded | Single-budget CI environment — these tools are covered only in the live manual integration suite. |
+| `budgets_list_available` / `budgets_switch` excluded from Docker CI | The default Docker E2E environment is still single-budget, but these tools now have dedicated transport and session regression coverage in the automated auth/transport suite. |

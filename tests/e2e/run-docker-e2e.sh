@@ -227,7 +227,7 @@ echo ""
 
 # Step 6: Run E2E tests
 if [ "$TEST_LEVEL" = "full" ]; then
-log_info "Step 6/6: Running FULL E2E tests (63 tests - all 54 tools + errors)..."
+log_info "Step 6/6: Running FULL E2E tests (all tool suites + error coverage)..."
   PLAYWRIGHT_PROJECT="docker-e2e-full"
 else
   log_info "Step 6/6: Running SMOKE E2E tests (11 quick tests)..."

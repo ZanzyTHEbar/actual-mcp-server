@@ -64,7 +64,7 @@ export async function budgetTests(client, context) {
       console.log(`✓ actual_budgets_list_available: returned ${listRes.count} budget(s)`);
       if (listRes.count > 0) {
         const b = listRes.budgets[0];
-        if (b.name && b.syncId && b.serverUrl && typeof b.hasEncryption === 'boolean') {
+        if (b.name && b.syncId && b.serverUrl && typeof b.usesEncryption === 'boolean') {
           console.log(`  ✓ First budget shape OK: name="${b.name}", syncId=${b.syncId}`);
         } else {
           console.log("  ❌ First budget missing expected fields:", JSON.stringify(b));
@@ -85,7 +85,7 @@ export async function budgetTests(client, context) {
   if (alternateBudget) {
     try {
       const switchRes = await callTool("actual_budgets_switch", { budgetName: alternateBudget.name });
-      if (switchRes?.success === true && switchRes?.budgetName && switchRes?.budgetId && switchRes?.serverUrl) {
+      if (switchRes?.success === true && switchRes?.budgetName && switchRes?.budgetId && switchRes?.budgetKey && switchRes?.serverUrl) {
         switchedToAlternate = availableBudgets.length > 1;
         console.log(`  ✓ actual_budgets_switch: switched to "${switchRes.budgetName}" (${switchRes.budgetId})`);
         if (availableBudgets.length === 1) {

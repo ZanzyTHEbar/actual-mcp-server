@@ -56,12 +56,12 @@ Save as `{budget_cat_id}`.
 Select a second different category for transfer test. Save as `{budget_cat2_id}`.
 
 - actual_budgets_list_available
-  Expect: object with `budgets` array and `count` number; each entry has `name`, `syncId`, `serverUrl`, `hasEncryption`
+  Expect: object with `budgets` array and `count` number; each entry has `name`, `syncId`, `serverUrl`, `usesEncryption`, `budgetKey`, `active`
   Save the name of the first budget as `{first_budget_name}`
 
 - actual_budgets_switch (positive)
   Input: { budgetName: "{first_budget_name}" }  ← use the name from list_available
-  Expect: { success: true, budgetName: string, budgetId: UUID, serverUrl: string }
+  Expect: { success: true, budgetName: string, budgetId: UUID, budgetKey: string, serverUrl: string }
 
 - actual_budgets_switch (negative)
   Input: { budgetName: "__nonexistent_budget_MCP_test__" }

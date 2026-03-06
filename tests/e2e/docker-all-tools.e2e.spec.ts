@@ -1,5 +1,5 @@
 /**
- * Comprehensive Docker E2E Tests - ALL 50 TOOLS
+ * Comprehensive Docker E2E Tests - ALL TOOLS
  * 
  * Tests every tool with success and error scenarios
  * Based on manual integration tests and unit tests
@@ -99,7 +99,7 @@ function extractResult(mcpResponse: any): any {
   return mcpResponse;
 }
 
-test.describe('Docker E2E - ALL 50 TOOLS', () => {
+test.describe('Docker E2E - ALL TOOLS', () => {
   let sessionId: string;
   let testContext: {
     accountId?: string;
