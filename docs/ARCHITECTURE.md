@@ -1,8 +1,8 @@
 # Architecture
 
 **Project:** Actual MCP Server  
-**Version:** 0.4.7  
-**Last Updated:** 2025-11-11
+**Version:** 0.4.26  
+**Last Updated:** 2026-03-03
 
 ---
 
@@ -17,8 +17,6 @@
 - [Transport Protocols](#transport-protocols)
 - [Error Handling](#error-handling)
 - [Performance & Reliability](#performance--reliability)
-- [Search Module](#search-module)
-- [Caching Layer](#caching-layer)
 
 ---
 
@@ -49,14 +47,14 @@
 │              Client Layer (LibreChat, etc.)               │
 └───────────────────────────────────────────────────────────┘
                             │
-                   HTTP / WebSocket / SSE
+                   HTTP / WebSocket
                             ▼
 ┌───────────────────────────────────────────────────────────┐
 │               Transport Layer                             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
-│  │   HTTP   │  │   WSS    │  │   SSE    │               │
-│  │ Server   │  │  Server  │  │  Server  │               │
-│  └──────────┘  └──────────┘  └──────────┘               │
+│  ┌──────────┐                                     │
+│  │   HTTP   │                                     │
+│  │  Server  │                                     │
+│  └──────────┘                                     │
 └───────────────────────────────────────────────────────────┘
                             │
                        MCP Protocol
@@ -79,7 +77,7 @@
 │  └────────────────────────────────────────────────────┘  │
 │                                                           │
 │  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐           │
-│  │Tool1│  │Tool2│  │Tool3│  │ ... │  │ 42  │           │
+│  │Tool1│  │Tool2│  │Tool3│  │ ... │  │ 56  │           │
 │  └─────┘  └─────┘  └─────┘  └─────┘  └─────┘           │
 └───────────────────────────────────────────────────────────┘
                             │
@@ -122,8 +120,6 @@
 | **Main Entry** | `src/index.ts` | Orchestration, CLI parsing, server startup | `main()` |
 | **Connection Manager** | `src/actualConnection.ts` | Actual Budget API lifecycle | `connectToActual()`, `shutdownActual()` |
 | **Tool Manager** | `src/actualToolsManager.ts` | Tool registry and dispatch | `registerTools()`, `callTool()` |
-| **Session Worker Manager** | `src/lib/SessionWorkerManager.ts` | Per-session worker lifecycle, write coordination | `createSession()`, `executeTool()` |
-| **Write Coordinator** | `src/lib/WriteCoordinator.ts` | Actor-style write serialization (entity keys) | `acquire()` |
 | **MCP Connection** | `src/lib/ActualMCPConnection.ts` | MCP protocol implementation | `handleToolCall()`, `handleRequest()` |
 | **Adapter Layer** | `src/lib/actual-adapter.ts` | API wrapper with error handling | All Actual API functions |
 | **Configuration** | `src/config.ts` | Environment validation | `config`, `configSchema` |
@@ -134,31 +130,42 @@
 
 | Transport | File | Status | Authentication | LibreChat Support |
 |-----------|------|--------|----------------|-------------------|
-| **HTTP** | `src/server/httpServer.ts` | ✅ Production | Bearer token | ✅ Fully supported |
-| **SSE** | `src/server/sseServer.ts` | ✅ Production | Bearer token* | ⚠️ Headers not sent |
-| **WebSocket** | `src/server/wsServer.ts` | ✅ Production | Bearer token | ❌ Not supported |
-
-*SSE authentication works server-side but LibreChat client doesn't send custom headers
+| **HTTP** | `src/server/httpServer.ts` | ✅ Production | Bearer token OR OIDC/JWT | ✅ Fully supported |
+| **WebSocket** | *(removed)* | ❌ Removed | N/A | ❌ Not supported |
+| **SSE** | *(removed)* | ❌ Removed | N/A | N/A |
 
 ### Tool Definitions
 
-52 tools organized by category:
+53 tools organized by category:
 
 ```
 src/tools/
-├── accounts_create.ts
+├── server_info.ts                      # Server version / connection info
+├── server_get_version.ts               # Actual Budget server version
+├── get_id_by_name.ts                   # Name → UUID lookup (accounts/categories/payees/schedules)
+├── session_list.ts                     # Session management (2 tools)
+├── session_close.ts
+├── accounts_create.ts                  # Accounts (7 tools)
 ├── accounts_list.ts
 ├── accounts_update.ts
 ├── accounts_delete.ts
 ├── accounts_close.ts
 ├── accounts_reopen.ts
 ├── accounts_get_balance.ts
-├── transactions_create.ts
+├── transactions_create.ts              # Transactions (13 tools)
 ├── transactions_get.ts
 ├── transactions_update.ts
 ├── transactions_delete.ts
 ├── transactions_import.ts
 ├── transactions_filter.ts
+├── transactions_search_by_amount.ts
+├── transactions_search_by_category.ts
+├── transactions_search_by_month.ts
+├── transactions_search_by_payee.ts
+├── transactions_summary_by_category.ts
+├── transactions_summary_by_payee.ts
+├── budgets_list_available.ts            # Budgets (11 tools)
+├── budgets_switch.ts
 ├── budgets_getMonth.ts
 ├── budgets_getMonths.ts
 ├── budgets_get_all.ts
@@ -167,31 +174,28 @@ src/tools/
 ├── budgets_setCarryover.ts
 ├── budgets_holdForNextMonth.ts
 ├── budgets_resetHold.ts
-├── budgets_batch_updates.ts
-├── categories_get.ts
+├── budget_updates_batch.ts
+├── categories_get.ts                   # Categories (4 tools)
 ├── categories_create.ts
 ├── categories_update.ts
 ├── categories_delete.ts
-├── category_groups_get.ts
+├── category_groups_get.ts              # Category Groups (4 tools)
 ├── category_groups_create.ts
 ├── category_groups_update.ts
 ├── category_groups_delete.ts
-├── payees_get.ts
+├── payees_get.ts                       # Payees (5 tools)
 ├── payees_create.ts
 ├── payees_update.ts
 ├── payees_delete.ts
 ├── payees_merge.ts
-├── payee_rules_get.ts
-├── rules_get.ts
+├── payee_rules_get.ts                  # Payee Rules (1 tool)
+├── rules_get.ts                        # Rules (4 tools)
 ├── rules_create.ts
 ├── rules_update.ts
 ├── rules_delete.ts
-├── query_run.ts
-├── bank_sync.ts
-├── hybrid_search.ts         # Hybrid FTS5 + vector + RRF retrieval
-├── search_similar.ts        # Vector similarity search (N most similar)
-├── search_index_info.ts    # Index stats + embedding provider info
-└── index.ts (exports all tools)
+├── query_run.ts                        # Advanced ActualQL queries
+├── bank_sync.ts                        # Bank synchronization
+└── index.ts                            # Tool exports
 ```
 
 ---
@@ -204,8 +208,7 @@ src/tools/
 1. Client sends MCP request
    │
    ├──> HTTP POST /http
-   ├──> WebSocket message
-   └──> SSE connection + POST
+
    │
 2. Transport layer receives request
    │
@@ -213,18 +216,11 @@ src/tools/
    │
 3. ActualMCPConnection routes request
    │
-   ├──> tools/list → Returns 2 meta-tools (Progressive Disclosure)
-   │    └──> actual_tool_registry: discover all internal tools
-   │    └──> actual_tool_call: dispatch to any internal tool
-   ├──> tools/call → Routes to SessionWorkerManager
+   ├──> tools/list → Returns available tools
+   ├──> tools/call → Dispatches to ActualToolsManager
    └──> Other MCP methods
    │
-4. Progressive Disclosure dispatch:
-   │
-   ├──> actual_tool_registry → queries ActualToolsManager for full catalog
-   └──> actual_tool_call → validates toolName, delegates to SessionWorkerManager
-   │
-5. ActualToolsManager validates and calls tool
+4. ActualToolsManager validates and calls tool
    │
    ├──> Validates tool name exists
    ├──> Validates input schema (Zod)
@@ -302,39 +298,37 @@ actual-mcp-server/
 │   ├── tests_adapter_runner.ts   # Adapter test executor
 │   │
 │   ├── lib/                      # Core libraries
-│   │   ├── actual-adapter.ts     # Actual API wrapper
-│   │   ├── ActualMCPConnection.ts # MCP protocol handler
-│   │   ├── cachedRefs.ts         # Centralized ref-data cache (accounts, payees, etc.)
-│   │   ├── retry.ts              # Retry logic utilities
-│   │   └── search/               # Search & caching module
-│   │       ├── index.ts          # Public exports
-│   │       ├── types.ts          # Search/cache types
-│   │       ├── ResponseCache.ts  # LRU cache + SWR + tag invalidation
-│   │       ├── CacheInvalidator.ts
-│   │       ├── syncState.ts      # Search index dirty flag
-│   │       ├── SearchIndex.ts   # libsql-backed index + FTS5 + vectors
-│   │       ├── HybridSearchEngine.ts
-│   │       ├── EmbeddingPipeline.ts
-│   │       └── providers/
-│   │           ├── types.ts, factory.ts, index.ts
-│   │           ├── HuggingFaceLocalProvider.ts
-│   │           ├── OllamaProvider.ts
-│   │           └── OpenAICompatibleProvider.ts
+│   │   ├── actual-adapter.ts     # Actual API wrapper (withActualApi, callWithRetry)
+│   │   ├── actual-schema.ts      # Shared Zod schema definitions
+│   │   ├── ActualConnectionPool.ts # Connection pool management
+│   │   ├── ActualMCPConnection.ts  # MCP protocol handler (EventEmitter-based)
+│   │   ├── ActualMCPConnection.js  # Compiled JS companion
+│   │   ├── constants.ts            # Configuration constants and limits
+│   │   ├── loggerFactory.ts        # Module-scoped logger factory
+│   │   ├── query-validator.ts      # ActualQL query validation
+│   │   ├── retry.ts                # Exponential backoff retry logic
+│   │   ├── toolFactory.ts          # Tool definition factory helpers
+│   │   └── schemas/                # Per-domain Zod schemas
 │   │
 │   ├── server/                   # Transport implementations
-│   │   ├── httpServer.ts         # HTTP transport (recommended)
-│   │   ├── sseServer.ts          # Server-Sent Events
-│   │   ├── wsServer.ts           # WebSocket transport
+   │   ├── httpServer.ts         # HTTP transport
+   │   ├── httpServer_testing.ts # HTTP server for test environments
+│   │   ├── streamable-http.ts    # Streamable HTTP protocol implementation
+│   │   ├── streamable-http.js    # Compiled JS companion
 │   │   └── streamable-http.d.ts  # Type definitions
 │   │
-│   ├── tools/                    # MCP tool definitions (42 files)
-│   │   ├── accounts_*.ts         # 7 account tools
-│   │   ├── transactions_*.ts     # 6 transaction tools
-│   │   ├── budgets_*.ts          # 8 budget tools
-│   │   ├── categories_*.ts       # 4 category tools
-│   │   ├── category_groups_*.ts  # 4 category group tools
-│   │   ├── payees_*.ts           # 6 payee tools
-│   │   ├── rules_*.ts            # 4 rule tools
+│   ├── tools/                    # MCP tool definitions (62 tools + index.ts)
+│   │   ├── server_info.ts        # Server info (1 tool)
+│   │   ├── session_*.ts          # Session management (2 tools)
+│   │   ├── accounts_*.ts         # Accounts (7 tools)
+│   │   ├── transactions_*.ts     # Transactions (13 tools, incl. search/summary)
+│   │   ├── budgets_*.ts          # Budgets (11 tools)
+│   │   ├── budget_updates_batch.ts # Batch budget operations
+│   │   ├── categories_*.ts       # Categories (4 tools)
+│   │   ├── category_groups_*.ts  # Category groups (4 tools)
+│   │   ├── payees_*.ts           # Payees (5 tools)
+│   │   ├── payee_rules_get.ts    # Payee rules (1 tool)
+│   │   ├── rules_*.ts            # Rules (4 tools)
 │   │   ├── query_run.ts          # Advanced ActualQL queries
 │   │   ├── bank_sync.ts          # Bank synchronization
 │   │   └── index.ts              # Tool exports
@@ -348,16 +342,33 @@ actual-mcp-server/
 │   └── resources/                # MCP resources
 │       └── accountsSummary.ts
 │
-├── test/                         # Tests and scripts
+├── tests/                        # Tests
 │   ├── e2e/                      # End-to-end tests (Playwright)
-│   ├── integration/              # Integration tests
-│   ├── unit/                     # Unit tests
-│   └── docker-actual-test/       # Docker test setup
+│   │   ├── mcp-client.playwright.spec.ts  # Protocol compliance tests
+│   │   ├── docker.e2e.spec.ts             # Docker smoke tests
+│   │   ├── docker-all-tools.e2e.spec.ts   # All-tools Docker E2E (~80 named tests, all 62 tools)
+│   │   ├── run-docker-e2e.sh              # Docker test orchestrator
+│   │   └── suites/                        # Domain suite registration functions (one file per domain)
+│   │       ├── shared-context.ts          # SharedState / TestContext types
+│   │       ├── server.ts / accounts.ts / categories.ts / payees.ts
+│   │       ├── transactions.ts / budgets.ts / rules.ts / schedules.ts
+│   │       └── advanced.ts / deletes.ts
+│   ├── unit/                     # Unit tests (offline, stub adapter)
+│   │   ├── transactions_create.test.js
+│   │   ├── generated_tools.smoke.test.js
+│   │   └── schema_validation.test.js
+│   ├── shared/                   # Shared test utilities
+│   │   ├── e2e-helpers.ts        # TS helpers for E2E: waitForMCPHealth, retryRequest, callTool, extractResult
+│   │   └── mcp-protocol.js       # JS mirror of extractResult (used by manual integration suite)
+│   └── manual/                   # Live integration tests (real Actual Budget)
 │
-├── scripts/                      # Build and utility scripts
-│   ├── generate-tools.ts         # Tool generator from OpenAPI
+├── scripts/                      # Build and utility scripts (see scripts/README.md)
 │   ├── verify-tools.js           # Tool coverage verification
-│   └── openapi/                  # OpenAPI specifications
+│   ├── bootstrap-and-init.sh     # Docker: bootstrap Actual server + import test budget
+│   ├── import-test-budget.sh     # Upload test-data/*.zip to Actual server
+│   ├── register-tsconfig-paths.js # Path alias resolver for dist/ runtime
+│   ├── list-actual-api-methods.mjs # API method coverage checker
+│   └── version-bump.js / version-check.js / version-dev.js  # Versioning
 │
 ├── docs/                         # Documentation (this folder)
 ├── generated/                    # Generated TypeScript types
@@ -365,7 +376,7 @@ actual-mcp-server/
 ├── logs/                         # Application logs (gitignored)
 │
 ├── Dockerfile                    # Production container
-├── docker-compose.prod.yml       # Production Docker Compose
+├── docker-compose.yaml           # Docker Compose (dev/production profiles)
 ├── package.json                  # Dependencies and scripts
 ├── tsconfig.json                 # TypeScript configuration
 └── .env.example                  # Environment variable template
@@ -379,7 +390,7 @@ actual-mcp-server/
 
 ```
 1. CLI Argument Parsing
-   └─> src/index.ts parses --help, --debug, --ws, --sse, --http
+   └─┾ src/index.ts parses --help, --debug, --http
    └─> --help exits early (before loading environment)
 
 2. Environment Loading
@@ -400,19 +411,19 @@ actual-mcp-server/
 5. Tool Registry Initialization
    └─> src/actualToolsManager.ts loads all tools
    └─> Validates tool schemas
-   └─> Registers 52 tools with MCP capabilities
+   └─> Registers 62 tools with MCP capabilities
 
 6. MCP Connection Setup
    └─> Create ActualMCPConnection instance
    └─> Build capabilities object (tools, resources, prompts)
 
 7. Transport Server Startup
-   └─> Start HTTP / SSE / WebSocket server
+   └─┾ Start HTTP server
    └─> Bind to MCP_BRIDGE_PORT
    └─> Register health endpoints
 
 8. Ready State
-   └─> Log "🚀 Actual MCP Server v0.1.0"
+   └─> Log current server version and transport mode
    └─> Accept MCP requests
 ```
 
@@ -422,7 +433,7 @@ actual-mcp-server/
 1. SIGINT / SIGTERM received
    │
 2. Graceful shutdown initiated
-   ├─> Close transport server (HTTP/SSE/WS)
+   ├─┾ Close transport server (HTTP)
    ├─> Stop accepting new requests
    ├─> Wait for pending requests (timeout: 10s)
    │
@@ -448,7 +459,7 @@ npm run dev -- --test-actual-connection
 
 # Test all tool implementations
 npm run dev -- --test-actual-tools
-  └─> Runs smoke tests for all 52 tools
+  └─> Runs smoke tests for all 62 tools
 
 # Test MCP client interaction
 npm run dev -- --http --test-mcp-client
@@ -481,14 +492,23 @@ MCP_BRIDGE_DATA_DIR=./actual-data       # Budget cache directory
 MCP_BRIDGE_BIND_HOST=0.0.0.0            # Bind address
 
 # Transport mode (Docker only)
-MCP_TRANSPORT_MODE=--http               # --http or --sse
+MCP_TRANSPORT_MODE=--http               # Only --http is supported
 ```
 
 #### Security
 
 ```bash
-# Authentication
+# Authentication mode (default: none = static Bearer)
+AUTH_PROVIDER=none                       # 'none' or 'oidc'
+
+# Static Bearer token (AUTH_PROVIDER=none)
 MCP_SSE_AUTHORIZATION=your_bearer_token  # Bearer token (optional)
+
+# OIDC / JWT authentication (AUTH_PROVIDER=oidc)
+OIDC_ISSUER=https://sso.yourdomain.com   # OIDC issuer URL
+OIDC_RESOURCE=your-client-id             # Expected 'aud' claim
+OIDC_SCOPES=                             # Required scopes (empty = none)
+AUTH_BUDGET_ACL=user@example.com:sync-id # Per-user budget ACL (optional)
 
 # HTTPS
 MCP_ENABLE_HTTPS=true                    # Enable TLS
@@ -524,8 +544,13 @@ export const configSchema = z.object({
   ACTUAL_BUDGET_SYNC_ID: z.string().min(1),
   MCP_BRIDGE_DATA_DIR: z.string().default('./actual-data'),
   MCP_BRIDGE_PORT: z.string().default('3000'),
-  MCP_TRANSPORT_MODE: z.enum(['--http', '--sse']).default('--http'),
+  MCP_TRANSPORT_MODE: z.enum(['--http']).default('--http'),
   MCP_SSE_AUTHORIZATION: z.string().optional(),
+  AUTH_PROVIDER: z.enum(['none', 'oidc']).default('none'),
+  OIDC_ISSUER: z.string().optional(),
+  OIDC_RESOURCE: z.string().optional(),
+  OIDC_SCOPES: z.string().optional(),
+  AUTH_BUDGET_ACL: z.string().optional(),
   MCP_ENABLE_HTTPS: z.string().optional().transform(val => val === 'true'),
   MCP_HTTPS_CERT: z.string().optional(),
   MCP_HTTPS_KEY: z.string().optional(),
@@ -545,7 +570,7 @@ export const configSchema = z.object({
 - `GET /health` - Health check
 - `GET /metrics` - Prometheus metrics
 
-**Authentication**: Bearer token in `Authorization` header
+**Authentication**: Bearer token OR OIDC/JWT in `Authorization` header
 
 **LibreChat Status**: ✅ Fully supported and verified
 
@@ -569,31 +594,9 @@ mcpServers:
     serverInstructions: true
 ```
 
-### SSE Transport
+> ⚠️ **Removed**: WebSocket transport (`wsServer.ts`) has been removed. Use HTTP transport instead.
 
-**Type**: Server-Sent Events
-
-**Endpoints**:
-- `GET /sse` - Event stream
-- `POST /sse` - Send messages
-
-**Authentication**: Bearer token (server-side only)
-
-**LibreChat Status**: ⚠️ Client doesn't send auth headers
-
-**Use Case**: Development without authentication
-
-### WebSocket Transport
-
-**Type**: Full-duplex WebSocket
-
-**Endpoint**: `ws://your-server:3600`
-
-**Authentication**: Bearer token in initial handshake
-
-**LibreChat Status**: ❌ Not supported
-
-**Use Case**: Custom MCP clients
+> ⚠️ **Removed**: SSE transport (`sseServer.ts`) has been removed. Use HTTP transport instead.
 
 ---
 
@@ -625,18 +628,20 @@ Error Response Format:
 Implemented in `src/lib/actual-adapter.ts`:
 
 ```typescript
-// Exponential backoff retry
-maxRetries: 3
-baseDelay: 1000ms
-backoff: exponential (1s, 2s, 4s)
+// Exponential backoff retry (src/lib/constants.ts)
+DEFAULT_RETRY_ATTEMPTS = 3
+DEFAULT_RETRY_BACKOFF_MS = 200   // 200ms base delay
+MAX_RETRY_DELAY_MS = 10000       // cap at 10s
+// backoff sequence: 200ms → 400ms → 800ms (capped at 10s)
 ```
 
 ### Concurrency Control
 
 ```typescript
-// Prevent overwhelming Actual Budget server
-maxConcurrentRequests: 5
-queueDelay: 100ms between requests
+// Prevent overwhelming Actual Budget server (src/lib/constants.ts)
+DEFAULT_CONCURRENCY_LIMIT = 5   // max simultaneous API calls
+// Overflow requests are queued and drained FIFO
+// Configurable via ACTUAL_API_CONCURRENCY env var
 ```
 
 ---
@@ -649,7 +654,6 @@ queueDelay: 100ms between requests
 2. **Local Caching**: Budget data cached to SQLite (MCP_BRIDGE_DATA_DIR)
 3. **Lazy Loading**: Dynamic imports for faster cold starts
 4. **Retry Logic**: Automatic recovery from transient failures
-5. **Session Isolation**: Dedicated worker per session to enable parallel tool execution
 
 ### Monitoring
 
@@ -671,7 +675,7 @@ queueDelay: 100ms between requests
 ### Core Dependencies
 
 **Production Runtime:**
-- **@actual-app/api** (^25.11.0): Official Actual Budget API client
+- **@actual-app/api** (^26.2.1): Official Actual Budget API client
   - Purpose: Core integration with Actual Budget server
   - License: MIT
   - Status: ✅ Current, actively maintained
@@ -683,7 +687,7 @@ queueDelay: 100ms between requests
   - Action: Scheduled for minor update
 
 - **express** (^4.21.2): Web server framework
-  - Purpose: HTTP/SSE transport layer
+  - Purpose: HTTP transport layer
   - License: MIT
   - Status: ✅ Current (Express v5 available but deferred)
   - Note: Major v5 migration planned for Q1 2026
@@ -711,8 +715,7 @@ queueDelay: 100ms between requests
 - **CI/CD**: Automated testing on dependency changes
 
 **Security Posture:**
-- ✅ 0 known vulnerabilities (as of 2025-11-24)
-- ✅ 306 total dependencies (207 production, 99 dev)
+- ✅ No known critical/high vulnerabilities (run `npm audit` for current status)
 - ✅ All packages actively maintained
 - ✅ Permissive licenses only (MIT, Apache-2.0, ISC, BSD)
 
@@ -722,15 +725,10 @@ queueDelay: 100ms between requests
 - **Major updates** (X.x.x): Dedicated migration sprint with breaking change analysis
 
 **Monitoring:**
-- Weekly dependency audits (Mondays 9 AM UTC)
-- Automated security vulnerability alerts
-- Dependency dashboard in GitHub Issues
-- Full audit report: `docs/DEPENDENCY_AUDIT_REPORT.md`
-
-**Pending Updates (as of 2025-11-24):**
-1. Batch patch updates (6 packages): Ready for auto-merge
-2. MCP SDK (1.18.2 → 1.22.0): Scheduled for minor update
-3. Express v5 migration: Deferred to Q1 2026 (requires 8-16 hour migration)
+- Daily automated dependency checks (1 AM UTC)
+- Automated security vulnerability alerts (Dependabot)
+- Automated dependency update PRs with auto-merge
+- See `.github/workflows/dependency-update.yml` for automation details
 
 ### Third-Party Integrations
 
@@ -740,9 +738,7 @@ queueDelay: 100ms between requests
 - Automatic sync on startup
 
 **LibreChat / MCP Clients:**
-- HTTP transport (recommended)
-- Server-Sent Events (SSE) for streaming
-- WebSocket (deprecated, legacy support)
+- HTTP transport (default and only supported transport)
 
 **Monitoring & Observability:**
 - Prometheus metrics (`/metrics` endpoint)
@@ -751,173 +747,9 @@ queueDelay: 100ms between requests
 
 ---
 
-## Search Module
-
-The search module provides hybrid transaction retrieval: **FTS5 BM25 + vector cosine similarity + metadata filtering + Reciprocal Rank Fusion (RRF)**. It runs in-process using libsql (Turso's SQLite fork) for storage.
-
-### Architecture Overview
-
-```mermaid
-flowchart TB
-    subgraph Tools["MCP Tools"]
-        HS[actual_hybrid_search]
-        SS[actual_search_similar]
-        SI[actual_search_index_info]
-    end
-
-    subgraph Engine["Search Engine"]
-        HSE[HybridSearchEngine]
-        EP[EmbeddingPipeline]
-    end
-
-    subgraph Index["SearchIndex"]
-        FTS[FTS5 Table]
-        VEC[Vector Column]
-        META[Metadata]
-    end
-
-    subgraph Providers["Embedding Providers"]
-        HF[HuggingFace Local]
-        OL[Ollama]
-        OA[OpenAI-compatible]
-    end
-
-    HS --> HSE
-    SS --> HSE
-    SI --> Index
-    HSE --> EP
-    HSE --> Index
-    EP --> Providers
-```
-
-### Key Components
-
-| Component | Responsibility |
-|-----------|----------------|
-| **SearchIndex** | libsql-backed index with FTS5 virtual table (self-contained, not external content) and `F32_BLOB` vector columns. Incremental sync via `content_hash` per row to skip unchanged transactions. |
-| **HybridSearchEngine** | Orchestrates FTS5 BM25 + vector ANN + metadata filters; merges results via RRF. |
-| **EmbeddingPipeline** | Batches text, embeds via provider, stores vectors. |
-| **Provider factory** | Fallback chain: configured provider → local HuggingFace → null (FTS-only mode). |
-
-### Embedding Providers
-
-| Provider | Package | Use Case |
-|----------|---------|----------|
-| **HuggingFace Local** | `@huggingface/transformers` | Zero-config local embeddings |
-| **Ollama** | `ollama` | Local Ollama models |
-| **OpenAI-compatible** | `openai` | Remote API (OpenAI, Together, etc.) |
-
-**Graceful degradation:** If embeddings are unavailable, hybrid/vector search auto-downgrades to fulltext-only (FTS5).
-
-### File Structure
-
-```
-src/lib/search/
-├── index.ts              # Public exports (getSearchEngine, safeGetOrFetch, etc.)
-├── types.ts              # SearchResult, CacheTag, etc.
-├── ResponseCache.ts      # LRU + TTL + tag invalidation + SWR
-├── CacheInvalidator.ts   # Tool → tag mapping
-├── syncState.ts          # markSearchIndexDirty / isSearchIndexDirty
-├── SearchIndex.ts        # libsql index with FTS5 + vectors
-├── HybridSearchEngine.ts # RRF merge logic
-├── EmbeddingPipeline.ts  # Batch embedding
-└── providers/
-    ├── types.ts, factory.ts, index.ts
-    ├── HuggingFaceLocalProvider.ts
-    ├── OllamaProvider.ts
-    └── OpenAICompatibleProvider.ts
-
-src/lib/cachedRefs.ts     # getCachedAccounts, getCachedPayees, etc.
-
-src/tools/
-├── hybrid_search.ts      # actual_hybrid_search
-├── search_similar.ts     # actual_search_similar
-└── search_index_info.ts  # actual_search_index_info
-```
-
-### New Search Tools (3)
-
-| Tool | Description |
-|------|-------------|
-| **actual_hybrid_search** | Hybrid retrieval: FTS5 BM25 + vector cosine + metadata filters + RRF |
-| **actual_search_similar** | Find N most similar transactions by vector cosine distance |
-| **actual_search_index_info** | Expose index stats (doc count, sync state) and embedding provider info |
-
----
-
-## Caching Layer
-
-### ResponseCache
-
-In-memory LRU cache (`lru-cache` v11) with:
-
-- **TTL** per entry
-- **Tag-based invalidation** — write tools invalidate by tag (e.g. `transactions`, `search`)
-- **Stale-while-revalidate (SWR)** — serve stale value immediately, revalidate in background
-- **Concurrent request coalescing** — duplicate in-flight requests share a single fetch
-
-### CacheInvalidator
-
-Maps write tool names to cache tags. Called after every successful write:
-
-```typescript
-invalidateAfterWrite('actual_transactions_create');
-// → invalidates tags: ['transactions', 'search']
-// → marks search index dirty for next search
-```
-
-### safeGetOrFetch
-
-Wrapper around `ResponseCache.getOrFetch` that catches cache infrastructure failures and falls through to direct API calls. Used by tools that need cached reference data.
-
-### cachedRefs.ts
-
-Centralized reference data caching with 10 min TTL:
-
-| Function | Tag | Fetcher |
-|----------|-----|---------|
-| `getCachedAccounts()` | `accounts` | `adapter.getAccounts()` |
-| `getCachedPayees()` | `payees` | `adapter.getPayees()` |
-| `getCachedCategories()` | `categories` | `adapter.getCategories()` |
-| `getCachedCategoryGroups()` | `categories` | `adapter.getCategoryGroups()` |
-
-Convention: cache keys use `ref:` prefix. Convenience builders (`getAccountMap`, `getPayeeMap`, etc.) avoid rebuilding maps on every call.
-
-```mermaid
-flowchart LR
-    subgraph Tools
-        T1[Tool A]
-        T2[Tool B]
-    end
-
-    subgraph Cache["ResponseCache"]
-        safe[safeGetOrFetch]
-    end
-
-    subgraph Invalidator["CacheInvalidator"]
-        inv[invalidateAfterWrite]
-    end
-
-    subgraph Write["Write Tools"]
-        W1[transactions_create]
-        W2[payees_update]
-    end
-
-    T1 --> safe
-    T2 --> safe
-    safe --> API[Actual Adapter]
-    W1 --> inv
-    W2 --> inv
-    inv --> Cache
-```
-
----
-
 ## Next Steps
 
 For more details:
-- [Dependency Audit Report](./DEPENDENCY_AUDIT_REPORT.md) - Complete dependency analysis
 - [Testing & Reliability](./TESTING_AND_RELIABILITY.md) - Testing strategy
-- [Security & Privacy](./SECURITY_AND_PRIVACY.md) - Security policies (including dependency security)
-- [Refactoring Plan](./REFACTORING_PLAN.md) - Dependency update roadmap
-- [AI Interaction Guide](./AI_INTERACTION_GUIDE.md) - AI agent rules
+- [Security & Privacy](./SECURITY_AND_PRIVACY.md) - Security policies
+- [Roadmap](./ROADMAP.md) - Future improvements

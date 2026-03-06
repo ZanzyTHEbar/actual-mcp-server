@@ -4,6 +4,7 @@ export const configSchema = z.object({
   ACTUAL_SERVER_URL: z.string().url(),
   ACTUAL_PASSWORD: z.string().default(''),
   ACTUAL_BUDGET_SYNC_ID: z.string().min(1),
+  ACTUAL_BUDGET_PASSWORD: z.string().optional(),
   MCP_BRIDGE_DATA_DIR: z.string().default('./actual-data'),
   MCP_BRIDGE_PORT: z.string().default('3000'),
   MCP_TRANSPORT_MODE: z.enum(['--http', '--sse']).default('--http'),
@@ -29,6 +30,8 @@ export const configSchema = z.object({
   OIDC_CLIENT_ID: z.string().optional(),
   OIDC_CLIENT_SECRET: z.string().optional(),
   OIDC_AUDIENCE: z.string().optional(),
+  OIDC_RESOURCE: z.string().optional(),
+  OIDC_SCOPES: z.string().optional(),
   // LDAP settings
   LDAP_URL: z.string().optional(),
   LDAP_BIND_DN: z.string().optional(),

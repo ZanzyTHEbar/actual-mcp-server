@@ -1,11 +1,11 @@
 # Project Overview
 
 **Project:** Actual MCP Server  
-**Version:** 0.4.7  
+**Version:** 0.4.26  
 **Status:** Production-ready with ongoing enhancements  
-**Last Updated:** 2026-01-07  
+**Last Updated:** 2026-03-03  
 **Assessment Score:** 88/100 (EXCELLENT)  
-**Tool Count:** 51 MCP tools (verified LibreChat and LobeChat compatible)  
+**Tool Count:** 62 MCP tools (verified LibreChat and LobeChat compatible)  
 **Docker Images:** Available on Docker Hub and GitHub Container Registry
 
 ---
@@ -21,7 +21,6 @@ The **Actual MCP Server** is a production-ready bridge service that exposes [Act
 - **Conversational Finance Management**: Users can manage their budget, transactions, and financial data by simply talking to an AI assistant
 - **AI-Native API Bridge**: Standardized MCP tools make Actual Budget accessible to any MCP-compatible AI client
 - **Production-Ready Integration**: Fully tested and verified with LibreChat, ready for deployment
-- **Multi-Transport Support**: HTTP and Server-Sent Events (SSE) transport protocols
 - **Secure by Default**: Bearer token authentication, HTTPS support, and privacy-first design
 
 ### Problem Being Solved
@@ -41,39 +40,39 @@ The **Actual MCP Server** is a production-ready bridge service that exposes [Act
 
 ## ✨ Core Features
 
-### 🛠️ **49 MCP Tools**
+### 🛠️ **62 MCP Tools**
 
-Comprehensive coverage of Actual Budget functionality across 9 categories:
+Comprehensive coverage of Actual Budget functionality across 12 categories:
 
 | Category | Tools | Coverage |
 |----------|-------|----------|
 | **Accounts** | 7 | Create, list, update, delete, close, reopen, get balance |
-| **Transactions** | 12 | Create, get, update, delete, import, filter, search (4), summary (2) |
-| **Budgets** | 8 | Get months, set amounts, transfers, carryover, holds |
+| **Transactions** | 13 | Create, get, update, delete, import, filter, search (4), summary (2) |
+| **Budgets** | 11 | Get months, set amounts, transfers, carryover, holds, batch, list, switch |
 | **Categories** | 4 | Create, list, update, delete |
 | **Category Groups** | 4 | Create, list, update, delete |
 | **Payees** | 6 | Create, list, update, delete, merge, get rules |
-| **Rules** | 4 | Create, list, update, delete |
+| **Rules** | 4 | Create, list, update, delete + upsert |
+| **Schedules** | 4 | Create, list, update, delete |
 | **Advanced Query & Sync** | 2 | Custom ActualQL queries, bank synchronization |
 | **Batch Operations** | 1 | Batch budget updates |
-| **Server Info** | 1 | Server status and information |
+| **Lookup & Server** | 4 | Server info, Actual Budget server version, name→UUID lookup |
+| **Session Management** | 2 | List and close active MCP sessions |
 
-**Total**: 51 tools with 82% coverage of Actual Budget core API
+**Total**: 62 tools with 100% coverage of Actual Budget core API
 
-> ✅ **All 51 tools verified** with LibreChat integration testing  
+> ✅ **All 62 tools verified** with LibreChat and LobeChat integration testing  
 > 🐳 **Docker images published** on Docker Hub and GitHub Container Registry  
-> 📊 **README enhanced** with comprehensive badges and improved discoverability
+> 📊 **60/62 tools in Docker E2E** (2 excluded: `budgets_list_available`, `budgets_switch` — single-budget CI constraint)
 
-### 🔄 **Transport Protocols**
+### 🔄 **Transport Protocol**
 
-- **HTTP (Recommended)**: `streamable-http` transport with Bearer token auth - **fully verified with LibreChat**
-- **Server-Sent Events (SSE)**: Alternative streaming transport (auth limitations in LibreChat)
-
-**Docker Default**: HTTP transport enabled by default, configurable via `MCP_TRANSPORT_MODE` environment variable
+- **HTTP**: `streamable-http` transport with Bearer token or OIDC/JWT auth - **fully verified with LibreChat**
 
 ### 🔐 **Security & Authentication**
 
-- **Bearer Token Authentication**: Optional `MCP_SSE_AUTHORIZATION` for secure API access
+- **Bearer Token Authentication** (`AUTH_PROVIDER=none`): Static `MCP_SSE_AUTHORIZATION` for secure single-user access
+- **OIDC / JWT Authentication** (`AUTH_PROVIDER=oidc`): JWKS-validated JWTs with per-user budget ACL; verified with Casdoor v2.13
 - **HTTPS Support**: TLS/SSL encryption for production deployments
 - **Environment-Based Secrets**: No hardcoded credentials, Docker secrets support
 - **Non-Root Container**: Security-hardened Docker image
@@ -109,11 +108,11 @@ Comprehensive coverage of Actual Budget functionality across 9 categories:
 
 | Dependency | Version | Purpose |
 |------------|---------|---------|
-| `@actual-app/api` | ^25.11.0 | Official Actual Budget API client |
-| `@modelcontextprotocol/sdk` | ^1.18.2 | MCP protocol implementation |
-| `express` | ^4.21.2 | HTTP/SSE server framework |
+| `@actual-app/api` | ^26.2.1 | Official Actual Budget API client |
+| `@modelcontextprotocol/sdk` | ^1.25.2 | MCP protocol implementation |
+| `express` | ^5.2.1 | HTTP server framework |
 | `winston` | ^3.18.3 | Structured logging |
-| `zod` | (bundled) | Runtime type validation |
+| `zod` | ^4.0.0 | Runtime type validation + native JSON Schema generation (`z.toJSONSchema()`) |
 | `date-fns` | ^4.1.0 | Date manipulation |
 | `dotenv` | ^17.2.2 | Environment configuration |
 
@@ -160,7 +159,7 @@ ACTUAL_BUDGET_SYNC_ID=your_sync_id
 - **Protocol**: MCP over HTTP (`streamable-http`)
 - **Integration**: LibreChat `mcpServers` configuration
 - **Authentication**: Bearer token via headers
-- **Status**: ✅ Fully verified - all 51 tools working
+- **Status**: ✅ Fully verified - all 56 tools working
 
 **LibreChat Configuration**:
 ```yaml
@@ -184,7 +183,7 @@ mcpServers:
 - **Tool Registry**: `ActualToolsManager` - Dynamic tool registration and dispatch
 - **Connection Manager**: `actualConnection.ts` - API lifecycle management
 - **Adapter Layer**: `actual-adapter.ts` - Error handling, retry logic, concurrency control
-- **Transport Servers**: HTTP and SSE implementations using official MCP SDK
+- **Transport Servers**: HTTP transport using official MCP SDK
 
 ---
 
@@ -202,12 +201,7 @@ mcpServers:
    - Switching budgets requires reconnection
    - Multi-budget support exists but requires workflow improvements
 
-3. **LibreChat SSE Authentication**
-   - LibreChat's SSE client doesn't send custom headers
-   - Workaround: Use HTTP transport for authenticated deployments
-   - Status: LibreChat limitation, not MCP server issue
-
-4. **Alpine Native Module Warnings**
+3. **Alpine Native Module Warnings**
    - `@actual-app/api` shows native module warnings on Alpine Linux
    - Impact: Non-blocking warnings, functionality not affected
    - Status: Known issue, considered acceptable
@@ -215,7 +209,7 @@ mcpServers:
 ### Technical Constraints
 
 1. **Database**: SQLite only (via Actual Budget)
-2. **Actual Budget Version**: Requires compatible API version (25.11.0+)
+2. **Actual Budget Version**: Requires compatible API version (26.2.1+)
 3. **Node.js**: Requires v20.x or higher
 4. **Memory**: Minimum 512MB RAM recommended for production
 
@@ -232,18 +226,17 @@ mcpServers:
 
 ### Current Achievements
 
-- ✅ **51 tools implemented** (82% of core API coverage)
-- ✅ **LibreChat verified** - all tools loading and functional
-- ✅ **Docker images published** - Docker Hub and GHCR
-- ✅ **CI/CD pipeline** - automated testing and deployment
-- ✅ **Security hardened** - Bearer auth, HTTPS, non-root container
-- ✅ **Test coverage** - >80% unit test coverage
+- ✅ **62 tools implemented** (100% of core API coverage)
+- ✅ **LibreChat and LobeChat verified** — all tools loading and functional
+- ✅ **Docker images published** — Docker Hub and GHCR
+- ✅ **CI/CD pipeline** — automated testing and deployment
+- ✅ **Security hardened** — Bearer auth, OIDC, HTTPS, non-root container
+- ✅ **Test coverage** — unit tests (62 tools), Docker Playwright E2E (76 tests, all 62 tools), live integration suite (62/62 tools)
 
 ### Future Goals
 
-- 🎯 Implement Schedules tools (4 tools) - target 100% API coverage
-- 🎯 Add more integration tests for complex workflows
-- 🎯 Improve error messages and user guidance
+- 🎯 [Tags CRUD](./feature/TAGS_CRUD.md) — 4 tools for managing transaction tags (blocked on upstream `@actual-app/api` stable release)
+- 🎯 [Improved Error Messages](./feature/IMPROVED_ERROR_MESSAGES.md) — actionable errors across all tools
 - 🎯 Performance optimization for large datasets
 - 🎯 Support for additional MCP clients (Claude Desktop, etc.)
 

@@ -1,9 +1,9 @@
 # Security & Privacy
 
 **Project:** Actual MCP Server  
-**Version:** 0.4.7  
+**Version:** 0.4.26  
 **Purpose:** Define security policies, privacy practices, and incident response  
-**Last Updated:** 2025-11-11
+**Last Updated:** 2026-03-03
 
 ---
 
@@ -46,11 +46,44 @@ MCP_SSE_AUTHORIZATION=your_generated_token
 
 **Security Properties**:
 - ✅ Stateless - no session management needed
-- ✅ Works with HTTP and WebSocket transports
+- ✅ Works with HTTP transport
 - ✅ Can be rotated without restarting server
-- ⚠️ SSE transport: Server validates but LibreChat client doesn't send headers
 
-#### 2. **Password-Based (Actual Budget)**
+#### 2. **OIDC / JWT Authentication**
+
+**Status**: ✅ Implemented (`AUTH_PROVIDER=oidc`)
+
+**How it works**: The server validates JWTs using JWKS from the OIDC issuer.
+No PKCE flow runs on the server — the MCP client (e.g., LibreChat) handles the OAuth code exchange.
+
+**Configuration**:
+```bash
+AUTH_PROVIDER=oidc
+OIDC_ISSUER=https://sso.yourdomain.com
+OIDC_RESOURCE=your-client-id          # must match 'aud' claim in JWT
+OIDC_SCOPES=                          # leave empty for Casdoor (no scope claim)
+AUTH_BUDGET_ACL=alice@example.com:budget-uuid-1
+```
+
+**Casdoor compatibility**: Casdoor auth-code flow JWTs omit the `scope` claim.
+Set `OIDC_SCOPES=` (empty string) so the server enforces no scope requirements and logs `Scopes required: (none)`.
+
+**Per-user Budget ACL** (`AUTH_BUDGET_ACL`):
+```
+# Format: principal:budget-sync-id (comma-separated)
+AUTH_BUDGET_ACL=alice@example.com:aaa-bbb-ccc,group:admins:ddd-eee-fff
+```
+Principals are matched against JWT claims `email`, `sub`, and `groups`.
+If `AUTH_BUDGET_ACL` is not set, all authenticated users access the single configured budget.
+
+**Security Properties**:
+- ✅ JWKS-validated JWT — cryptographically verified
+- ✅ Per-user budget isolation via `AUTH_BUDGET_ACL`
+- ✅ Compatible with Casdoor v2.13, Keycloak, Auth0
+- ✅ Group-based access control
+- ⚠️ Requires OIDC issuer reachable from MCP server
+
+#### 3. **Password-Based (Actual Budget)**
 
 **Purpose**: Authenticate with Actual Budget server
 
@@ -65,75 +98,27 @@ ACTUAL_PASSWORD=your_actual_budget_password
 - ✅ Supports Docker secrets
 - ❌ Cannot use OAuth/JWT (Actual Budget limitation)
 
-#### 3. **OIDC Authentication** (NEW)
-
-**Status**: ✅ Implemented
-
-**How it works**: Validates JWT access tokens against an OIDC-compliant identity provider using JWKS discovery.
-
-**Supported Providers**:
-- Keycloak, Auth0, Okta, Azure AD, Google, any OIDC-compliant IdP
-
-**Configuration**:
-```bash
-AUTH_PROVIDER=oidc
-OIDC_ISSUER=https://auth.example.com/realms/myapp
-OIDC_CLIENT_ID=actual-mcp-server
-OIDC_AUDIENCE=actual-mcp-server
-```
-
-**Security Properties**:
-- ✅ Industry-standard JWT validation via JWKS
-- ✅ Token expiry enforced automatically
-- ✅ Claims extraction (sub, email, groups)
-- ✅ Session-to-identity binding (one user per session)
-- ✅ Works with any OIDC-compliant provider
-
-#### 4. **LDAP Authentication** (NEW)
-
-**Status**: ✅ Implemented
-
-**How it works**: Authenticates users via LDAP bind + search. Credential is base64-encoded `username:password`.
-
-**Configuration**:
-```bash
-AUTH_PROVIDER=ldap
-LDAP_URL=ldap://ldap.example.com:389
-LDAP_BIND_DN=cn=admin,dc=example,dc=com
-LDAP_BIND_PASSWORD=admin-password
-LDAP_SEARCH_BASE=ou=users,dc=example,dc=com
-LDAP_SEARCH_FILTER=(uid={{username}})
-```
-
-**Security Properties**:
-- ✅ Service account bind + user search + user bind verification
-- ✅ Group membership resolution
-- ✅ Session-to-identity binding
-- ⚠️ Requires TLS (LDAPS) for production deployments
-
 ### Authorization Model
 
-**Multi-user with Budget ACL** (NEW):
+**Default** (`AUTH_PROVIDER=none`): Single-user, full access
 
-When `AUTH_PROVIDER` is `oidc` or `ldap`, authenticated users are bound to their MCP session. The optional `AUTH_BUDGET_ACL` environment variable controls which users can access which budgets:
+**OIDC mode** (`AUTH_PROVIDER=oidc`): Per-user budget ACL via `AUTH_BUDGET_ACL`
 
-```bash
-# JSON map: user/group → allowed budget sync IDs
-AUTH_BUDGET_ACL={"alice@example.com": ["budget-sync-1"], "group:finance": ["*"], "*": ["budget-public"]}
-```
+**All authenticated users can**:
+- Read all financial data
+- Modify all transactions
+- Delete accounts and budgets
+- Access all tools
 
-**Access resolution order**:
-1. Wildcard `*` entries
-2. Match by `userId`
-3. Match by `email` (if different from userId)
-4. Match by `group:*` memberships
+**With `AUTH_BUDGET_ACL` configured**:
+- Each user is mapped to a specific budget sync ID
+- Users can only access their own budget
+- Group principals (`group:admins`) give shared access
+- Suitable for household or small-team deployments
 
-**When ACL is not configured**: All authenticated users can access all budgets (open access).
-
-**Session-Identity Binding**:
-- Each MCP session is bound to the first authenticated identity
-- Subsequent requests with a different identity on the same session are rejected (403)
-- Prevents session hijacking across users
+**Without `AUTH_BUDGET_ACL`**:
+- All authenticated users share the single configured budget
+- Suitable for personal use
 
 ---
 
@@ -174,7 +159,7 @@ chown $USER:$USER ./actual-data
 **Protection**:
 - ✅ File permissions (0600)
 - ✅ Log rotation with retention limits
-- ⚠️ Sanitization needed (see [IMPROVEMENT_AREAS.md](./IMPROVEMENT_AREAS.md))
+- ⚠️ Sanitization needed (ongoing improvement)
 
 **Best Practices**:
 ```bash
@@ -241,12 +226,6 @@ MCP_HTTPS_KEY=/app/certs/key.pem
 **Use environment variables**:
 ```typescript
 const password = process.env.ACTUAL_PASSWORD;
-```
-
-**Use Docker secrets**:
-```bash
-docker run -e ACTUAL_PASSWORD_FILE=/run/secrets/password \
-  -v ./secrets/password.txt:/run/secrets/password:ro
 ```
 
 **Validate with Zod**:
@@ -545,11 +524,11 @@ npm audit fix
 3. **Impact Analysis:** Determine if vulnerability affects our usage
 4. **Remediation:** Apply patch or workaround
 5. **Verification:** Test fix, deploy, monitor
-6. **Documentation:** Update DEPENDENCY_AUDIT_REPORT.md
+6. **Documentation:** Automated via dependency update workflow
 
 **Recent CVE Resolutions:**
-- ✅ **2025-11-24:** js-yaml prototype pollution (CVE-2024-XXXXX) - Patched to v4.1.0
-- Status: 0 known vulnerabilities in current dependency tree
+- See CI/CD audit results and GitHub Dependabot alerts for current vulnerability status.
+- Run `npm audit` locally at any time for an up-to-date report.
 
 ### Dependency Update Policy
 
@@ -573,21 +552,18 @@ npm audit fix
 
 ### Dependency Audit Reports
 
-**Location:** `docs/DEPENDENCY_AUDIT_REPORT.md`
-
-**Contents:**
-- Current dependency inventory (production + dev)
-- Security vulnerability status
-- Outdated packages analysis
+**Automated Audits:**
+- Weekly dependency audits (automated via GitHub Actions)
+- Continuous security vulnerability scanning (Dependabot)
+- Automated dependency updates and PRs
+- See `.github/workflows/dependency-update.yml` for automation details
 - Breaking change assessments
 - Update recommendations and roadmap
 
 **Update Frequency:** Monthly (automated generation via CI/CD)
 
-**Last Audit:** November 24, 2025
-- **Security Status:** ✅ CLEAN (0 vulnerabilities)
-- **Outdated Packages:** 9 (1 major, 8 minor/patch)
-- **Project Health:** 82/100 (GOOD)
+**Last Audit:** See CI/CD pipeline for current status (automatically audited on every push).
+- Run `npm audit` locally to get an up-to-date report at any time.
 
 ### Dependency Pinning Strategy
 
@@ -725,19 +701,14 @@ secrets:
 
 services:
   mcp:
-    secrets:
-      - actual_password
     environment:
-      ACTUAL_PASSWORD_FILE: /run/secrets/actual_password
+      ACTUAL_PASSWORD: ${ACTUAL_PASSWORD}
 ```
 
 **Environment variables**:
 ```bash
-# Secure: Read from file
+# Recommended: pass via .env file or shell environment
 docker run -e ACTUAL_PASSWORD=$(cat secrets/password.txt)
-
-# Secure: Use Docker secrets
-docker run -e ACTUAL_PASSWORD_FILE=/run/secrets/password
 ```
 
 ---
@@ -748,40 +719,35 @@ docker run -e ACTUAL_PASSWORD_FILE=/run/secrets/password
 
 | Risk | Status | Mitigation |
 |------|--------|------------|
-| **A01 Broken Access Control** | ✅ Protected | OIDC/LDAP auth, budget ACL, session-identity binding |
-| **A02 Cryptographic Failures** | ✅ Protected | HTTPS/TLS support, JWT validation via JWKS |
+| **A01 Broken Access Control** | ⚠️ Partial | Bearer token auth, no RBAC |
+| **A02 Cryptographic Failures** | ✅ Protected | HTTPS/TLS support |
 | **A03 Injection** | ✅ Protected | Zod validation, prepared statements |
 | **A04 Insecure Design** | ✅ Protected | Security-first architecture |
 | **A05 Security Misconfiguration** | ⚠️ Partial | Default HTTP (users must enable HTTPS) |
 | **A06 Vulnerable Components** | ✅ Monitored | npm audit in CI/CD |
-| **A07 Auth Failures** | ✅ Improved | OIDC/LDAP + session binding (no rate limiting yet) |
+| **A07 Auth Failures** | ⚠️ Partial | No rate limiting, no MFA |
 | **A08 Data Integrity Failures** | ✅ Protected | Validated inputs, integrity checks |
 | **A09 Logging Failures** | ⚠️ Partial | Needs sanitization |
 | **A10 SSRF** | ✅ Protected | No user-controlled URLs |
 
-**Overall**: Production-ready with OIDC/LDAP authentication and per-user budget access control
+**Overall**: Reasonable security for personal use, needs hardening for multi-user
 
 ---
 
 ## 🔗 Related Documentation
 
-- [AI Interaction Guide](./AI_INTERACTION_GUIDE.md) - AI security rules
 - [Testing & Reliability](./TESTING_AND_RELIABILITY.md) - Security testing
-- [Improvement Areas](./IMPROVEMENT_AREAS.md) - Security debt tracking
-- [Refactoring Plan](./REFACTORING_PLAN.md) - Security improvements
+- [Architecture](./ARCHITECTURE.md) - Technical security design
+- [Roadmap](./ROADMAP.md) - Security improvements
 
 ---
 
 ## ✨ Summary
 
-**Security Posture**: **Production-ready with multi-user authentication**
+**Security Posture**: **Good for personal use, needs hardening for production**
 
 **Key Security Features**:
-- ✅ OIDC authentication (Keycloak, Auth0, Okta, Azure AD, Google)
-- ✅ LDAP authentication (Active Directory, OpenLDAP)
-- ✅ Per-user budget access control (ACL)
-- ✅ Session-to-identity binding (prevents session hijacking)
-- ✅ Bearer token authentication (legacy/simple mode)
+- ✅ Bearer token authentication
 - ✅ HTTPS/TLS support
 - ✅ Input validation with Zod
 - ✅ Secrets in environment variables
@@ -790,11 +756,12 @@ docker run -e ACTUAL_PASSWORD_FILE=/run/secrets/password
 **Key Security Gaps**:
 - ⚠️ No rate limiting
 - ⚠️ No audit logging
+- ⚠️ No RBAC
 - ⚠️ Log sanitization needed
 
 **Recommendation**: 
-- **Personal use**: Use `AUTH_PROVIDER=none` with `MCP_SSE_AUTHORIZATION` token
-- **Team use**: Use `AUTH_PROVIDER=oidc` with your IdP + `AUTH_BUDGET_ACL`
-- **Enterprise use**: Use `AUTH_PROVIDER=oidc` or `ldap` with budget ACL and HTTPS
+- **Personal use**: Current security is sufficient
+- **Team use**: Add rate limiting and audit logging
+- **Enterprise use**: Add RBAC, SIEM integration, compliance auditing
 
-See [IMPROVEMENT_AREAS.md](./IMPROVEMENT_AREAS.md) for tracked security improvements.
+See [ROADMAP.md](./ROADMAP.md) for planned security improvements.

@@ -2,16 +2,17 @@
 
 A production-ready Model Context Protocol (MCP) bridge that exposes Actual Budget APIs as conversational AI tools for LibreChat and other MCP-compatible clients.
 
-> **✅ LibreChat Verified**: All 51 tools tested and working with LibreChat over HTTPS with Bearer token authentication.
+> **✅ LibreChat Verified**: All 62 tools tested and working with LibreChat over HTTPS with Bearer token and OIDC authentication.
 
 ## 🚀 Features
 
-- **51 Implemented Tools** - Comprehensive coverage of core Actual Budget API
+- **62 Implemented Tools** - Comprehensive coverage of core Actual Budget API
 - **6 Exclusive ActualQL Tools** - Advanced queries and summaries unique to this MCP server
-- **Advanced Features** - Custom ActualQL queries, bank sync, multi-budget support
+- **Advanced Features** - Custom ActualQL queries, bank sync, multi-budget switching
 - **HTTPS Support** - Secure connections with self-signed or CA certificates
-- **LibreChat Ready** - Tested and verified with all 49 tools loading successfully
-- **Multiple Transports** - HTTP, SSE (Server-Sent Events) with authentication
+- **OIDC / JWT Auth** - Multi-user OIDC authentication with per-user budget ACL (Casdoor, Keycloak, etc.)
+- **LibreChat Ready** - Tested and verified with all 62 tools loading successfully
+- **Multiple Transports** - HTTP transport with authentication
 - **Production-Grade** - Retry logic, concurrency control, observability
 - **Type-Safe** - Full TypeScript implementation with generated types
 - **Secure** - Non-root container, secrets management, rate limiting
@@ -32,9 +33,6 @@ docker run -d \
   -v actual-mcp-data:/data \
   agigante80/actual-mcp-server:latest
   
-# Note: HTTP transport is the default. To use SSE instead:
-# -e MCP_TRANSPORT_MODE=--sse  (Server-Sent Events)
-
 # Or use GitHub Container Registry
 docker run -d ... ghcr.io/agigante80/actual-mcp-server:latest
 ```
@@ -74,15 +72,46 @@ docker run -d \
 
 ### Server Configuration
 - `MCP_BRIDGE_PORT` - Server port (default: 3600)
-- `MCP_TRANSPORT_MODE` - Transport protocol: --http (default) or --sse
+- `MCP_TRANSPORT_MODE` - Transport protocol: --http (only supported mode)
 - `MCP_SSE_AUTHORIZATION` - Bearer token for authentication (generate with `openssl rand -hex 32`)
+
+### Multi-Budget Switching (Optional)
+
+Configure multiple Actual Budget files — on the **same or different servers** — so the AI can switch between them at runtime.
+
+`BUDGET_N_SERVER_URL` and `BUDGET_N_PASSWORD` fall back to the default `ACTUAL_*` values when omitted, so budgets on the same server need only `NAME` and `SYNC_ID`.
+
+```bash
+# Default budget
+ACTUAL_SERVER_URL=http://actual-main:5006
+ACTUAL_PASSWORD=my-password
+ACTUAL_BUDGET_SYNC_ID=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+BUDGET_DEFAULT_NAME=My Main Budget
+
+# Budget 1 — same server, same password (SERVER_URL + PASSWORD omitted)
+BUDGET_1_NAME=Shared Family Account
+BUDGET_1_SYNC_ID=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+
+# Budget 2 — same server, different password (SERVER_URL omitted)
+BUDGET_2_NAME=Business
+BUDGET_2_PASSWORD=business-password
+BUDGET_2_SYNC_ID=cccccccc-cccc-cccc-cccc-cccccccccccc
+
+# Budget 3 — entirely separate Actual server (all fields required)
+BUDGET_3_NAME=Remote Office
+BUDGET_3_SERVER_URL=https://actual-office.example.com:5006
+BUDGET_3_PASSWORD=office-password
+BUDGET_3_SYNC_ID=dddddddd-dddd-dddd-dddd-dddddddddddd
+```
+
+Use `actual_budgets_list_available` to see all configured budgets and `actual_budgets_switch` to change the active one.
 
 ### HTTPS Configuration (Optional but Recommended)
 - `MCP_ENABLE_HTTPS` - Enable HTTPS (true/false, default: false)
 - `MCP_HTTPS_CERT` - Path to SSL certificate (default: /app/certs/cert.pem)
 - `MCP_HTTPS_KEY` - Path to SSL private key (default: /app/certs/key.pem)
 
-## 📚 Available Tools (49 Total)
+## 📚 Available Tools (62 Total)
 
 ### Account Management (7 tools)
 create, list, update, delete, close, reopen, get balance
@@ -91,8 +120,8 @@ create, list, update, delete, close, reopen, get balance
 **Basic Operations (6):** create, get, update, delete, import, filter  
 **⚡ Exclusive ActualQL Tools (6):** search by month/amount/category/payee, spending summary by category, top vendors analysis
 
-### Budget Management (8 tools)
-get all budgets, get months, get month, set amount, transfer between categories, set carryover, hold for next month, reset hold
+### Budget Management (10 tools)
+list available budgets, switch active budget, get all budgets, get months, get month, set amount, transfer between categories, set carryover, hold for next month, reset hold
 
 ### Category Management (8 tools)
 create, list, update, delete (categories and category groups)
@@ -112,6 +141,9 @@ Batch multiple budget updates in a single transaction
 
 ### Server Information (1 tool)
 Get Actual Budget server version and build information
+
+### Session Management (2 tools)
+List all active MCP sessions, close specific sessions by ID
 
 ## ⚡ Exclusive ActualQL Features
 
@@ -149,26 +181,24 @@ curl -k https://localhost:3600/health
 
 # Check logs
 docker logs actual-mcp-server
-# Should show: "🚀 Actual MCP Server v0.1.0"
+# Should show startup message with current version
 ```
 
 ## 🤖 LibreChat Integration
 
 1. Generate HTTPS certificates (self-signed or CA-signed)
 2. Run container with HTTPS enabled
-3. Configure LibreChat with:
-   ```json
-   {
-     "actualMcpServer": {
-       "url": "https://YOUR_SERVER_IP:3600",
-       "transport": "http",
-       "headers": {
-         "Authorization": "Bearer YOUR_TOKEN"
-       }
-     }
-   }
+3. Configure LibreChat (`librechat.yaml`) with:
+   ```yaml
+   mcpServers:
+     actual-mcp:
+       type: "streamable-http"
+       url: "https://YOUR_SERVER_IP:3600/http"
+       headers:
+         Authorization: "Bearer YOUR_TOKEN"
+       serverInstructions: true
    ```
-4. All 49 tools will load automatically (including 6 exclusive ActualQL tools)
+4. All 62 tools will load automatically (including 6 exclusive ActualQL tools)
 
 **Verified**: HTTP transport with Bearer token authentication works perfectly with LibreChat.
 

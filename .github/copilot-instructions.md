@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-**Actual MCP Server** bridges AI assistants with [Actual Budget](https://actualbudget.org/) via the Model Context Protocol (MCP), providing **51 tools** for conversational financial management. Built for LibreChat but MCP-compatible with any client.
+**Actual MCP Server** bridges AI assistants with [Actual Budget](https://actualbudget.org/) via the Model Context Protocol (MCP), providing **60 tools** for conversational financial management. Built for LibreChat but MCP-compatible with any client.
 
 **Tech Stack**: TypeScript (NodeNext), Node.js 20+, `@actual-app/api`, `@modelcontextprotocol/sdk`, Express, Zod schemas, Playwright tests
 
-**Current Status**: Production-ready, 51 tools implemented, 82% Actual Budget API coverage
+**Current Status**: Production-ready, 60 tools implemented, 84% Actual Budget API coverage
 
 ## Architecture Essentials
 
@@ -28,7 +28,7 @@ await rawAddTransactions(data);
 
 ### Tool Structure
 
-All 51 tools follow this pattern (`src/tools/*.ts`):
+All 60 tools follow this pattern (`src/tools/*.ts`):
 
 ```typescript
 import { z } from 'zod';
@@ -67,7 +67,10 @@ export default tool;
 src/
 ├── index.ts                    # Entry point, CLI parsing, server startup
 ├── actualConnection.ts         # Actual Budget connection lifecycle
-├── actualToolsManager.ts       # Tool registry (51 tools in IMPLEMENTED_TOOLS array), dispatch, validation
+├── actualToolsManager.ts       # Tool registry (60 tools in IMPLEMENTED_TOOLS array), dispatch, validation
+├── auth/
+│   ├── setup.ts                # createMcpAuth() factory (MCPAuth singleton, AUTH_PROVIDER=oidc)
+│   └── budget-acl.ts           # Per-user budget ACL (email/sub/group principals, AUTH_BUDGET_ACL)
 ├── lib/
 │   ├── actual-adapter.ts       # ⚠️ CRITICAL: withActualApi wrapper, retry logic
 │   ├── ActualMCPConnection.ts  # MCP protocol implementation (EventEmitter-based)
@@ -76,9 +79,8 @@ src/
 │   ├── schemas/common.ts       # Shared Zod schemas (accountId, amountCents, etc.)
 │   └── loggerFactory.ts        # Module-scoped loggers (winston)
 ├── server/
-│   ├── httpServer.ts           # HTTP transport (recommended for LibreChat)
-│   └── sseServer.ts            # SSE transport (LibreChat header limitation)
-└── tools/                      # 53 tool definitions (see actualToolsManager.ts)
+│   └── httpServer.ts           # HTTP transport
+└── tools/                      # 60 tool definitions (see actualToolsManager.ts)
 ```
 
 ## Development Workflow
@@ -93,16 +95,43 @@ npm run start                   # Production mode (requires build first)
 # Testing
 npm run test:adapter            # Adapter smoke tests (concurrency, retry logic)
 npm run test:unit-js            # Unit tests for transactions
-npm run test:e2e                # Playwright E2E tests (initialize → tools/call → SSE)
+npm run test:e2e                # Playwright E2E tests (initialize → tools/call → streaming)
 
 # Tool Management
-npm run generate-tools          # Auto-generate tool definitions from Actual API
-npm run verify-tools            # Verify all 53 tools are correctly registered
+npm run verify-tools            # Verify all 60 tools are correctly registered
+
+# Docs & Release
+npm run docs:sync               # Sync **Version:** and **Tool Count:** markers in all docs
+npm run release:patch           # Bump patch version + auto-sync docs markers
+npm run release:minor           # Bump minor version + auto-sync docs markers
+npm run release:major           # Bump major version + auto-sync docs markers
+
+# Deployment (periodic maintenance)
+npm run deploy:full             # Full redeploy: build image → pull → recreate → health check
+npm run deploy:smoke            # Smoke-only: health check + integration tests (no rebuild)
 ```
+
+### Copilot Agent Validation Sequence
+
+When Copilot coding agent validates its own changes, run these commands in order:
+
+```bash
+npm run build                    # Step 1: TypeScript must compile cleanly
+npm run verify-tools             # Step 2: All tools registered (reads dist/ — build first)
+npm run test:unit-js             # Step 3: Unit + schema tests pass
+npm audit --audit-level=moderate # Step 4: No new vulnerabilities
+```
+
+**Do NOT run in Copilot's default ephemeral environment:**
+- `npm run test:e2e` / `npm run test:integration:*` — requires live server (OK if issue provides one)
+- `tests/manual-prompt/` — **never** — human copy-paste into LibreChat/LobeChat only
+- `npm run dev` / `npm run start` — requires `.env` with real credentials
+- `npm run release:*` / `npm run docs:sync` — version bumping is human responsibility
+- `npm run deploy:*` — requires live Docker environment
 
 ### Pre-Commit Testing Policy
 
-**MANDATORY before every commit** (from `docs/AI_INTERACTION_GUIDE.md`):
+**MANDATORY before every commit**:
 
 ```bash
 npm run build                   # ✅ No TypeScript errors
@@ -127,42 +156,6 @@ docker compose --profile fullstack up
 ```
 
 Default ports: HTTP (3000), Nginx proxy (3600), Actual Budget (5006)
-
-## Critical Dependency Constraints
-
-### Zod Version MUST Be 3.x
-
-**⚠️ DO NOT upgrade Zod to 4.x under any circumstances!**
-
-**Problem**: Zod 4.x has breaking internal changes:
-- Removed `typeName` property from schema `_def` objects
-- Changed internal schema structure from `{ typeName, ...}` to `{ type, ...}`
-- This breaks `zod-to-json-schema@3.25.0` which relies on `typeName` to determine schema type
-- Result: `zodToJsonSchema()` returns only `{"$schema": "..."}` without type/properties
-- LibreChat's Zod validation rejects these incomplete schemas: "invalid_literal, expected: object"
-- **All 53 tools become invisible to LibreChat**
-
-**Solution Implemented**:
-1. `package.json`: `"zod": "3.25.76"` (exact version, no caret)
-2. `package.json`: `"overrides": { "zod": "3.25.76" }` (force all dependencies)
-3. `Dockerfile`: Post-install step removes Zod 4.x and reinstalls 3.25.76
-4. `renovate.json`: Should pin Zod to 3.x range
-
-**When Dependabot/Renovate Suggests Zod 4.x**:
-1. **REJECT the PR immediately**
-2. Add comment: "Zod 4.x breaks zod-to-json-schema compatibility. See docs/ZOD_VERSION_CONSTRAINT.md"
-3. Update pin rules if needed
-
-**Testing After Any Dependency Update**:
-```bash
-# Verify Zod version in container
-docker exec <container> cat /app/node_modules/zod/package.json | grep version
-# Must show "3.25.76" or "3.25.x" (NOT 4.x)
-
-# Test schema conversion
-node -e "(async()=>{const{z}=await import('zod');const{zodToJsonSchema}=await import('zod-to-json-schema');console.log(JSON.stringify(zodToJsonSchema(z.object({id:z.string()})),null,2));})()"
-# Must show full schema with type, properties, NOT just $schema
-```
 
 ## Common Patterns & Gotchas
 
@@ -210,7 +203,7 @@ ACTUAL_SERVER_URL=http://localhost:5006  # Actual Budget server
 ACTUAL_PASSWORD=your_password
 ACTUAL_BUDGET_SYNC_ID=uuid-from-actual   # Settings → Sync ID
 ACTUAL_BUDGET_PASSWORD=                  # Optional budget encryption password
-MCP_TRANSPORT_MODE=http                  # http|sse (http recommended)
+MCP_TRANSPORT_MODE=http                  # only http is supported
 MCP_SSE_AUTHORIZATION=Bearer token123    # Optional Bearer token auth
 ```
 
@@ -235,15 +228,10 @@ const IMPLEMENTED_TOOLS = [
 npm run verify-tools
 ```
 
-**Note**: 6 search/summary tools exist but aren't in IMPLEMENTED_TOOLS array:
-- `actual_transactions_search_by_amount`
-- `actual_transactions_search_by_category`  
-- `actual_transactions_search_by_month`
-- `actual_transactions_search_by_payee`
-- `actual_transactions_summary_by_category`
-- `actual_transactions_summary_by_payee`
-
-These work fine but should be added to the array for consistency.
+All 6 ActualQL-powered search/summary tools are registered:
+`actual_transactions_search_by_amount`, `actual_transactions_search_by_category`,
+`actual_transactions_search_by_month`, `actual_transactions_search_by_payee`,
+`actual_transactions_summary_by_category`, `actual_transactions_summary_by_payee`.
 
 ### 6. LibreChat Testing Pain Points
 
@@ -279,7 +267,7 @@ npm run test:e2e  # Spawns server, tests full MCP flow
 
 **Common LibreChat Issues**:
 1. **Tools don't load**: Check `MCP_TRANSPORT_MODE=http` in server env
-2. **Auth failures**: LibreChat doesn't send SSE headers - use server-side auth only
+2. **Auth failures**: Verify `MCP_SSE_AUTHORIZATION` token is correct
 3. **Timeout errors**: Increase `DEFAULT_OPERATION_TIMEOUT_MS` in `src/lib/constants.ts`
 4. **Silent failures**: Tool succeeded but no UI feedback - check LibreChat logs
 
@@ -290,7 +278,7 @@ npm run test:e2e  # Spawns server, tests full MCP flow
 Located in `tests/e2e/mcp-client.playwright.spec.ts`:
 
 - Spawns MCP server as child process
-- Tests full MCP protocol flow: initialize → tools/list → tools/call → SSE
+- Tests full MCP protocol flow: initialize → tools/list → tools/call → streaming response
 - Waits for server readiness (30s timeout)
 - Validates JSON-RPC responses
 
@@ -313,47 +301,112 @@ Located in `src/tests_adapter_runner.ts`:
 # Test Actual connection only
 npm run dev -- --test-actual-connection
 
-# Test all 53 tools
+# Test all 60 tools
 npm run dev -- --test-actual-tools
 ```
 
 ## Documentation Standards
 
-**Sync Policy**: Update docs when changing code behavior (from `docs/AI_INTERACTION_GUIDE.md`):
+**Sync Policy**: Update docs when changing code behavior:
 
-- **Architecture changes** → Update `docs/ARCHITECTURE.md`
-- **New features** → Update `README.md` + `docs/PROJECT_OVERVIEW.md`
-- **Testing changes** → Update `docs/TESTING_AND_RELIABILITY.md`
-- **Security changes** → Update `docs/SECURITY_AND_PRIVACY.md`
+| Code Change | Required Documentation Updates |
+|-------------|-------------------------------|
+| **New MCP tool** | `README.md` (tool count + table), `docs/PROJECT_OVERVIEW.md`, `docs/ARCHITECTURE.md` tool list |
+| **New API route/endpoint** | `docs/ARCHITECTURE.md` (endpoints), `docs/PROJECT_OVERVIEW.md` if user-facing |
+| **Environment variable added** | `.env.example` (with comment), `docs/ARCHITECTURE.md` Configuration section |
+| **Test changes** | `docs/TESTING_AND_RELIABILITY.md` (commands/coverage) |
+| **Security/auth changes** | `docs/SECURITY_AND_PRIVACY.md` |
+| **New feature** | `docs/PROJECT_OVERVIEW.md`, `docs/ROADMAP.md` (mark completed), `README.md` |
+| **Dependency update** | `docs/PROJECT_OVERVIEW.md` (tech stack) |
+| **Docker changes** | `docs/ARCHITECTURE.md`, `README.md` Docker commands |
+
+**Version & Tool Count Sync**: `scripts/version-bump.js` auto-updates `**Version:**` and
+`**Tool Count:**` markers across all docs on every `release:*` bump or `docs:sync` run.
+Never manually edit these markers — run `npm run docs:sync` instead.
 
 **Documentation Location**: Comprehensive docs in `/docs/` directory:
-- `AI_INTERACTION_GUIDE.md` - AI agent rules (mandatory testing policies)
 - `ARCHITECTURE.md` - Component layers, data flow, transport protocols
-- `PROJECT_OVERVIEW.md` - Features, roadmap, assessment (82/100 score)
+- `PROJECT_OVERVIEW.md` - Features, roadmap, assessment (88/100 score)
+- `NEW_TOOL_CHECKLIST.md` - Step-by-step checklist for adding a new tool (9 steps)
+
+## ⚠️ Danger Zones (Never Do These)
+
+| Action | Why it's dangerous |
+|--------|-------------------|
+| Call `@actual-app/api` directly (skipping adapter) | Data won't persist — Tombstone issue |
+| Add a tool without updating `IMPLEMENTED_TOOLS` | Tool silently missing from count |
+| Use decimal dollars (e.g. `50.00`) instead of cents (`5000`) | Creates wrong transaction amounts |
+| Use `Date.now()` for a date field | Produces a number, not YYYY-MM-DD string |
+| Delete `withActualApi` wrapper from adapter | Breaks data persistence for all callers |
+| Change `ACTUAL_BUDGET_SYNC_ID` in any source file | Ties code to a specific budget instance |
+| Run `npm run release:*` or `npm run docs:sync` | Version bumping is human responsibility only |
+| Commit without running `npm run build` + `npm run test:unit-js` | May push broken TypeScript |
+| Hardcode secrets or tokens in source files | Security vulnerability |
+| Use `any` type without strong justification | Bypasses TypeScript safety |
+
+## 📄 Documentation Hygiene — Delete, Don't Archive
+
+> **Prefer deletion over archiving.** Git history is the archive.
+
+- When a feature is fully implemented: **delete** its `docs/feature/*.md` spec file and remove its row from `docs/ROADMAP.md`
+- When a document's content is merged elsewhere: **delete** the source file and remove all references to it
+- Do NOT move files to `archive/` or `deprecated/` folders
+- Do NOT leave `<!-- TODO -->` or `[PLANNED]` markers in files describing live behaviour
+- Do NOT keep stale "planned" sections in docs once the code ships
+- When in doubt: if the information already exists in code, tests, or another doc — delete the redundant file
+
+## File Modification Safety Tiers
+
+### ✅ Safe to Modify
+- `src/tools/*.ts` — follow existing tool patterns, validate with Zod
+- `tests/**` — add tests for new features, update when behaviour changes
+- `docs/**/*.md`, `README.md` — update when code changes
+- `.env.example`, `docker-compose.yaml` — document all changes
+
+### ⚠️ Modify With Caution
+- `src/index.ts`, `src/actualConnection.ts` — high-risk, require thorough testing
+- `src/lib/actual-adapter.ts` — affects all tool calls, test extensively
+- `src/server/*.ts` — protocol-level changes, verify with MCP client
+- `src/actualToolsManager.ts` — tool registry, run `verify-tools` after every change
+
+### ❌ Do Not Modify Without Explicit Permission
+- `types/*.d.ts` — generated from external sources, changes will be overwritten
+- `generated/**/*` — auto-generated from OpenAPI specs, modify the source not output
+- `.gitignore`, `.npmrc` — only with clear justification
+- `scripts/version-bump.js`, `VERSION` — version bumping is human responsibility
 
 ## Key Files to Review
 
 When working on specific areas, reference these files:
 
-**Adding Tools**: `src/actualToolsManager.ts`, `src/tools/*.ts`, `src/lib/schemas/common.ts`  
-**Transport Issues**: `src/server/httpServer.ts`, `src/server/sseServer.ts`  
+**Adding Tools**: `src/actualToolsManager.ts`, `src/tools/*.ts`, `src/lib/schemas/common.ts`, `docs/NEW_TOOL_CHECKLIST.md`  
+**Transport Issues**: `src/server/httpServer.ts`  
+**OIDC/Auth**: `src/auth/setup.ts`, `src/auth/budget-acl.ts`, `src/config.ts` (AUTH_PROVIDER etc.)  
 **API Integration**: `src/lib/actual-adapter.ts` (withActualApi pattern), `src/lib/retry.ts`  
-**Testing**: `tests/e2e/mcp-client.playwright.spec.ts`, `src/tests_adapter_runner.ts`  
-**Configuration**: `src/config.ts`, `.env.example`, `docker-compose.yaml`
+**Testing**: `tests/e2e/mcp-client.playwright.spec.ts`, `src/tests_adapter_runner.ts`, `tests/manual/` (live integration suite)  
+**Deployment**: `scripts/deploy-and-test.sh`, `docker-compose.yaml`  
+**Configuration**: `src/config.ts`, `.env.example`
 
 ## Common Tasks
 
 ### Add a New Tool
 
-1. Create `src/tools/new_tool.ts` using pattern above
+> **Follow `docs/NEW_TOOL_CHECKLIST.md`** — the canonical 9-step guide covering
+> implementation, unit tests (positive + negative), manual integration tests,
+> AI prompt update, all required doc files, and final validation.
+
+Quick summary:
+1. Create `src/tools/new_tool.ts` using the pattern above
 2. Add tool name to `IMPLEMENTED_TOOLS` in `src/actualToolsManager.ts`
-3. Run `npm run verify-tools` to confirm registration
-4. Run `npm run build && npm run test:adapter` before committing
+3. Add unit tests in `tests/unit/` (positive + at least one negative case)
+4. Add integration test entry in `tests/manual/tests/` following `tests/manual/README.md`
+5. Run `npm run verify-tools` to confirm registration
+6. Run `npm run build && npm run test:adapter && npm run test:unit-js` before committing
+7. Run `npm run docs:sync` to update **Tool Count:** markers in all docs
 
 ### Fix LibreChat Integration Issue
 
 - **Check transport**: LibreChat requires HTTP transport (`--http` flag)
-- **Verify auth**: LibreChat doesn't send custom SSE headers (auth works server-side only)
 - **Review logs**: Debug mode (`--debug`) shows all MCP requests/responses
 - **Test locally**: Use `tests/e2e/mcp-client.playwright.spec.ts` to reproduce
 
@@ -363,10 +416,10 @@ If transactions/budgets don't persist:
 1. Verify `withActualApi` wrapper is used (grep for `rawAdd*` calls)
 2. Check `api.shutdown()` is called after operations
 3. Review logs for "tombstone" errors
-4. Reference [TOMBSTONE_ISSUE_RESOLVED.md](../docs/archive/docs-backup-2026-01-08/TOMBSTONE_ISSUE_RESOLVED.md)
+4. Ensure `withActualApi` wrapper properly handles init/shutdown lifecycle
 
 ---
 
-**Last Updated**: 2026-01-08  
-**Version**: 0.4.7  
-**Tool Count**: 51 (verified LibreChat-compatible)
+**Last Updated**: 2026-03-03  
+**Version:** 0.4.26  
+**Tool Count:** 62 (verified LibreChat-compatible)
