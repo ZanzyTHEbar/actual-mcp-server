@@ -1,9 +1,9 @@
 # Project Overview
 
 **Project:** Actual MCP Server  
-**Version:** 0.4.26  
+**Version:** 0.4.8  
 **Status:** Production-ready with ongoing enhancements  
-**Last Updated:** 2026-03-03  
+**Last Updated:** 2026-03-06  
 **Assessment Score:** 88/100 (EXCELLENT)  
 **Tool Count:** 62 MCP tools (verified LibreChat and LobeChat compatible)  
 **Docker Images:** Available on Docker Hub and GitHub Container Registry
@@ -40,9 +40,12 @@ The **Actual MCP Server** is a production-ready bridge service that exposes [Act
 
 ## ✨ Core Features
 
-### 🛠️ **62 MCP Tools**
+### 🛠️ **62 Internal Tools**
 
-Comprehensive coverage of Actual Budget functionality across 12 categories:
+Comprehensive coverage of Actual Budget functionality across 12 categories.
+The runtime uses a **progressive disclosure** model:
+- MCP `tools/list` exposes `actual_tool_registry` and `actual_tool_call`
+- the remaining 62 internal tools are discovered and executed through that gateway layer
 
 | Category | Tools | Coverage |
 |----------|-------|----------|
@@ -59,9 +62,9 @@ Comprehensive coverage of Actual Budget functionality across 12 categories:
 | **Lookup & Server** | 4 | Server info, Actual Budget server version, name→UUID lookup |
 | **Session Management** | 2 | List and close active MCP sessions |
 
-**Total**: 62 tools with 100% coverage of Actual Budget core API
+**Total**: 62 internal tools with 100% coverage of Actual Budget core API
 
-> ✅ **All 62 tools verified** with LibreChat and LobeChat integration testing  
+> ✅ **Gateway model verified** with LibreChat and LobeChat integration testing  
 > 🐳 **Docker images published** on Docker Hub and GitHub Container Registry  
 > 📊 **60/62 tools in Docker E2E** (2 excluded: `budgets_list_available`, `budgets_switch` — single-budget CI constraint)
 

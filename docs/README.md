@@ -1,71 +1,33 @@
 # Actual MCP Server Documentation
 
-**Version:** 0.4.7  
+**Version:** 0.4.8  
 **Project:** Model Context Protocol bridge for Actual Budget  
-**Last Updated:** 2026-01-08
-
----
-
-## 🎯 Welcome
-
-This is the **comprehensive documentation hub** for the Actual MCP Server project. All documentation is maintained here and automatically synchronized with code changes by AI agents following strict testing and quality policies.
+**Last Updated:** 2026-03-06
 
 ---
 
 ## Documentation Index
 
-This directory contains comprehensive documentation for the Actual MCP Server project.
+This directory is the canonical documentation hub for the active codebase.
 
 ### Core Documentation
 
-- **[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)** - Project purpose, features, architecture, and roadmap
-- **[AI_INTERACTION_GUIDE.md](AI_INTERACTION_GUIDE.md)** - Guide for AI assistants interacting with this codebase
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture, design patterns, and system components
-- **[REFACTORING_STATUS.md](REFACTORING_STATUS.md)** - Current refactoring tasks and code quality metrics
-- **[IMPROVEMENT_AREAS.md](IMPROVEMENT_AREAS.md)** - Known issues, limitations, and enhancement opportunities
-- **[TESTING_AND_RELIABILITY.md](TESTING_AND_RELIABILITY.md)** - Testing strategy, coverage, and quality metrics
-- **[SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md)** - Security practices, threat model, and privacy considerations
-- **[ROADMAP.md](ROADMAP.md)** - Feature roadmap and development timeline
-- **[DEPENDENCY_UPDATE_PLAN.md](DEPENDENCY_UPDATE_PLAN.md)** - Phased dependency update execution plan
+- **[PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)** - product scope, features, tool count, and current project status
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - runtime architecture, transports, session model, and data flow
+- **[TESTING_AND_RELIABILITY.md](TESTING_AND_RELIABILITY.md)** - test policy, validation expectations, and CI-relevant guidance
+- **[SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md)** - auth model, privacy boundaries, and security guidance
+- **[ROADMAP.md](ROADMAP.md)** - active forward-looking roadmap only
+- **[AI_INTERACTION_GUIDE.md](AI_INTERACTION_GUIDE.md)** - AI-agent workflow and repo modification rules
+- **[NEW_TOOL_CHECKLIST.md](NEW_TOOL_CHECKLIST.md)** - required process for adding or modifying MCP tools
 
-### Historical Documentation (Archive)
+### Notes
 
-- **[archive/2025-11-24_refactoring_analysis.md](archive/2025-11-24_refactoring_analysis.md)** - Comprehensive code refactoring analysis
-- **[archive/2025-11-24_dependency_audit.md](archive/2025-11-24_dependency_audit.md)** - Dependency security audit and update recommendations
-- **[archive/2025-11-24_reassessment.md](archive/2025-11-24_reassessment.md)** - Project health assessment snapshot
-
----
-
-## 📝 Recent Documentation Updates (December 2025)
-
-**Documentation Consolidation**:
-- ✅ Corrected tool count from 42 to 49 throughout all documentation
-- ✅ Added 6 missing tools to IMPLEMENTED_TOOLS array (search/summary tools)
-- ✅ Consolidated REFACTORING_PLAN.md + CODE_REFACTORING_ANALYSIS.md → REFACTORING_STATUS.md
-- ✅ Created docs/archive/ folder for historical reports
-- ✅ Removed temporary README_UPDATE_SUMMARY.md
-- ✅ Updated PROJECT_OVERVIEW.md with accurate metrics (85/100 score)
-
-**Tool Registration**:
-- ✅ All 51 tools now properly registered in IMPLEMENTED_TOOLS array
-- ✅ Tool count consistency verified across codebase
-
-**Previous Updates (November 2025)**:
-
-**README.md Enhancements**:
-- ✅ Added comprehensive badge set (Docker Pulls, CI status, Docker image size, GitHub stars)
-- ✅ Enhanced Docker registry visibility (Docker Hub + GHCR prominently displayed)
-- ✅ Improved visual hierarchy and discoverability
+- The project currently uses a **progressive disclosure** MCP model.
+- `tools/list` exposes the gateway tools, while the full internal tool surface is discovered and executed through that layer.
 - ✅ Docker short description validated (98/100 characters ✅)
 
-**New Technical Documentation**:
-- ✅ **REFACTORING_STATUS.md** - Consolidated refactoring tracking (December 10, 2025)
-- ✅ **DEPENDENCY_AUDIT_REPORT.md** - Security audit of 306 dependencies (0 vulnerabilities) - Archived
-- ✅ **DEPENDENCY_UPDATE_PLAN.md** - Phased update strategy (3 phases, 26-44 hours)
-- ✅ Automated dependency management system configured (Dependabot + Renovate + CI/CD)
-
 **Project Status**:
-- **49 MCP Tools** fully implemented and LibreChat-verified
+- **62 internal tools** implemented behind the MCP gateway model
 - **Production-ready** with Docker images on Docker Hub and GHCR
 - **Security score**: 100/100 (0 vulnerabilities detected)
 - **Code quality score**: 85/100 (Good, consolidated refactoring tracking available)
@@ -198,7 +160,7 @@ actual-mcp-server/
 ### Before Making Changes
 
 1. Read [AI Interaction Guide](./AI_INTERACTION_GUIDE.md) for development policies
-2. Check [Refactoring Plan](./REFACTORING_PLAN.md) for planned improvements
+2. Review [Project Overview](./PROJECT_OVERVIEW.md) and [Roadmap](./ROADMAP.md) for current scope
 3. Review [Security & Privacy](./SECURITY_AND_PRIVACY.md) for security requirements
 
 ### Development Workflow
@@ -217,7 +179,7 @@ When you change code, update these docs:
 |-------------|---------------------|
 | New API route or tool | ARCHITECTURE.md, PROJECT_OVERVIEW.md |
 | Test changes | TESTING_AND_RELIABILITY.md |
-| Complete refactor task | REFACTORING_PLAN.md (check off item) |
+| Internal refactor or structural cleanup | ARCHITECTURE.md, AI_INTERACTION_GUIDE.md |
 | Security/auth changes | SECURITY_AND_PRIVACY.md, AI_INTERACTION_GUIDE.md |
 | Environment variable | ARCHITECTURE.md, AI_INTERACTION_GUIDE.md |
 | New feature | PROJECT_OVERVIEW.md, ROADMAP.md |
@@ -226,7 +188,8 @@ When you change code, update these docs:
 
 ## 📊 Project Status
 
-- **Total Tools**: 49 MCP tools
+- **Total Internal Tools**: 62
+- **MCP-Exposed Tools**: 2 gateway/meta-tools
 - **API Coverage**: ~80% of Actual Budget core API
 - **Test Coverage**: >80% unit test coverage
 - **LibreChat**: ✅ Fully verified and tested
@@ -243,7 +206,7 @@ See [Roadmap](./ROADMAP.md) for upcoming features.
 
 - Start with [Project Overview](./PROJECT_OVERVIEW.md) for high-level understanding
 - See [Architecture](./ARCHITECTURE.md) for technical details
-- Check [Improvement Areas](./IMPROVEMENT_AREAS.md) for known issues
+- See [Testing & Reliability](./TESTING_AND_RELIABILITY.md) for verification expectations
 
 ### Issues
 
@@ -263,7 +226,7 @@ MIT License - see LICENSE file for details.
 
 This documentation is maintained by both human developers and AI agents. Every document in `/docs` is automatically updated when relevant code changes occur.
 
-**Last Documentation Audit**: 2025-11-11  
-**Next Scheduled Review**: When major version changes occur
+**Last Documentation Audit**: 2026-03-06  
+**Next Scheduled Review**: When architecture, tool exposure, or validation policy changes
 
 For documentation maintenance policies, see [AI Interaction Guide](./AI_INTERACTION_GUIDE.md).

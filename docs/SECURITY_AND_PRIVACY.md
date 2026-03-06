@@ -1,9 +1,9 @@
 # Security & Privacy
 
 **Project:** Actual MCP Server  
-**Version:** 0.4.26  
+**Version:** 0.4.8  
 **Purpose:** Define security policies, privacy practices, and incident response  
-**Last Updated:** 2026-03-03
+**Last Updated:** 2026-03-06
 
 ---
 

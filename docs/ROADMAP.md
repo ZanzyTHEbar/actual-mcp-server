@@ -1,8 +1,8 @@
 # Roadmap
 
 **Project:** Actual MCP Server  
-**Version:** 0.4.26  
-**Last Updated:** 2026-03-03
+**Version:** 0.4.8  
+**Last Updated:** 2026-03-06
 
 > 📋 **Implementing a planned item?** Follow [docs/NEW_TOOL_CHECKLIST.md](./NEW_TOOL_CHECKLIST.md) — mandatory 9-step process for all new tools.
 

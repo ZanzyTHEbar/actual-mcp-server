@@ -1,9 +1,9 @@
 # AI Interaction Guide
 
 **Project:** Actual MCP Server  
-**Version:** 0.4.7  
+**Version:** 0.4.8  
 **Purpose:** Define operational boundaries and rules for AI agents  
-**Last Updated:** 2026-01-08
+**Last Updated:** 2026-03-06
 
 ---
 
@@ -17,30 +17,18 @@ This document establishes **mandatory rules and policies** for AI agents working
 
 ## 🛠️ Tool Architecture: Progressive Disclosure
 
-**MCP-Exposed Tools**: **2 meta-tools** (via `tools/list`)
-- `actual_tool_registry` — discover all internal tools with descriptions and input schemas
-- `actual_tool_call` — execute any internal tool by name
+**MCP surface**: the active server exposes the current registered MCP tool set directly.
+Tool count and category breakdown should be treated as **live data** from the codebase, not hardcoded here.
 
-**Internal Tool Count**: **54+ tools** (all accessible via `actual_tool_call` dispatcher)
-
-**Tool Categories**:
-- Accounts: 7 tools
-- Transactions: 14 tools (including batch update, uncategorized, 6 search + 2 summary tools)
-- Budgets: 9 tools
-- Categories: 4 tools
-- Category Groups: 4 tools
-- Payees: 6 tools
-- Rules: 5 tools (including create-or-update upsert)
-- Advanced: 3 tools (query, bank sync, server info)
-- Session: 2 tools (list, close)
-- Meta: 2 tools (registry, tool call)
-
-**Location**: `src/actualToolsManager.ts` - IMPLEMENTED_TOOLS array
+**Source of truth**:
+- `src/actualToolsManager.ts` for registered tools
+- `docs/PROJECT_OVERVIEW.md` for high-level capability summary
+- `docs/ARCHITECTURE.md` for transport and runtime behavior
 
 **Interaction Pattern**:
-1. AI client sees 2 tools in `tools/list`
-2. Calls `actual_tool_registry` to discover internal tools (with optional `category` filter)
-3. Calls `actual_tool_call` with `{ toolName, arguments }` to execute any internal tool
+1. Inspect the current MCP-exposed tools through the running server or tool registry in code
+2. Use the concrete tool schemas for argument shape and validation expectations
+3. Prefer current transport/runtime behavior over older examples in historical docs
 
 ---
 
@@ -212,10 +200,10 @@ Before modifying, read [SECURITY_AND_PRIVACY.md](./SECURITY_AND_PRIVACY.md):
 | **New API route/endpoint** | • `ARCHITECTURE.md` (update endpoints)<br>• `PROJECT_OVERVIEW.md` (if user-facing feature) |
 | **Environment variable added** | • `.env.example` (add variable with comment)<br>• `ARCHITECTURE.md` (Configuration section)<br>• `AI_INTERACTION_GUIDE.md` (this file, Common Commands if relevant) |
 | **Test changes** | • `TESTING_AND_RELIABILITY.md` (update test commands/coverage) |
-| **Refactor completed** | • `REFACTORING_PLAN.md` (check off completed item) |
+| **Refactor completed** | • `ARCHITECTURE.md` (if structure changed)<br>• `PROJECT_OVERVIEW.md` (if user-facing behavior changed) |
 | **Security/auth changes** | • `SECURITY_AND_PRIVACY.md` (update security policies)<br>• `AI_INTERACTION_GUIDE.md` (update safe modification rules) |
-| **Performance optimization** | • `ARCHITECTURE.md` (update Performance & Reliability)<br>• `IMPROVEMENT_AREAS.md` (mark as resolved) |
-| **Bug fix** | • `IMPROVEMENT_AREAS.md` (remove from known issues if listed) |
+| **Performance optimization** | • `ARCHITECTURE.md` (update Performance & Reliability)<br>• `TESTING_AND_RELIABILITY.md` (if validation expectations changed) |
+| **Bug fix** | • `PROJECT_OVERVIEW.md` or `TESTING_AND_RELIABILITY.md` if the fix changes documented behavior |
 | **New feature** | • `PROJECT_OVERVIEW.md` (add to features)<br>• `ROADMAP.md` (mark as completed, move from planned)<br>• Main `README.md` (update feature list) |
 | **Dependency update** | • `PROJECT_OVERVIEW.md` (update technology stack) |
 | **Docker changes** | • `ARCHITECTURE.md` (update deployment info)<br>• Main `README.md` (update Docker commands if changed) |
@@ -370,7 +358,7 @@ Requirements:
 1. Extract retry logic to src/lib/retry.ts
 2. Maintain existing behavior
 3. Add unit tests for retry utility
-4. Update REFACTORING_PLAN.md
+4. Update ARCHITECTURE.md if module boundaries changed
 5. No breaking changes
 ```
 
@@ -379,7 +367,6 @@ Requirements:
 - [ ] Existing functionality preserved
 - [ ] Tests added for new module
 - [ ] All existing tests still pass
-- [ ] REFACTORING_PLAN.md updated
 - [ ] ARCHITECTURE.md updated if structure changed
 - [ ] Committed with clear refactor message
 
@@ -393,7 +380,7 @@ Requirements:
 1. Identify root cause
 2. Fix in src/tools/transactions_filter.ts
 3. Add test case for the bug
-4. Update IMPROVEMENT_AREAS.md if this was a known issue
+4. Update a canonical doc only if documented behavior changes
 5. Verify fix doesn't break existing tests
 ```
 
@@ -402,7 +389,7 @@ Requirements:
 - [ ] Fix implemented
 - [ ] Regression test added
 - [ ] All tests pass
-- [ ] IMPROVEMENT_AREAS.md updated
+- [ ] Canonical docs updated if behavior changed
 - [ ] Committed with "fix:" prefix
 
 ---
@@ -509,7 +496,7 @@ For more details:
 - [Security & Privacy](./SECURITY_AND_PRIVACY.md) - Security policies and incident response
 - [Testing & Reliability](./TESTING_AND_RELIABILITY.md) - Comprehensive testing guide
 - [Architecture](./ARCHITECTURE.md) - System design and components
-- [Refactoring Plan](./REFACTORING_PLAN.md) - Ongoing improvement tasks
+- [Roadmap](./ROADMAP.md) - Current planned work and future features
 
 ---
 
