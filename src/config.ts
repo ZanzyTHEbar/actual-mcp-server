@@ -31,7 +31,9 @@ export const configSchema = z.object({
   OIDC_CLIENT_SECRET: z.string().optional(),
   OIDC_AUDIENCE: z.string().optional(),
   OIDC_RESOURCE: z.string().optional(),
-  OIDC_SCOPES: z.string().optional(),
+  OIDC_SCOPES: z.string().optional().transform(val =>
+    val ? val.split(',').map(scope => scope.trim()).filter(Boolean) : []
+  ),
   // LDAP settings
   LDAP_URL: z.string().optional(),
   LDAP_BIND_DN: z.string().optional(),

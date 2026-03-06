@@ -23,11 +23,16 @@ function createMockReq(overrides: Partial<Request> = {}): Request {
   } as unknown as Request;
 }
 
-function createMockRes(): Response & { _statusCode: number; _json: unknown } {
+function createMockRes(): Response & { _statusCode: number; _json: unknown; _headers: Record<string, string> } {
   const res = {
     _statusCode: 200,
     _json: null,
+    _headers: {},
     locals: {},
+    setHeader(name: string, value: string) {
+      res._headers[name] = value;
+      return res;
+    },
     status(code: number) {
       res._statusCode = code;
       return res;
@@ -36,7 +41,7 @@ function createMockRes(): Response & { _statusCode: number; _json: unknown } {
       res._json = data;
       return res;
     },
-  } as unknown as Response & { _statusCode: number; _json: unknown };
+  } as unknown as Response & { _statusCode: number; _json: unknown; _headers: Record<string, string> };
   return res;
 }
 
@@ -85,6 +90,9 @@ describe('Auth Middleware', () => {
 
     await middleware(req, res as any, next as NextFunction);
     expect(res._statusCode).toBe(401);
+    expect(res._headers['WWW-Authenticate']).toBe(
+      'Bearer error="invalid_token", error_description="Missing Authorization header"',
+    );
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -96,6 +104,9 @@ describe('Auth Middleware', () => {
 
     await middleware(req, res as any, next as NextFunction);
     expect(res._statusCode).toBe(401);
+    expect(res._headers['WWW-Authenticate']).toBe(
+      'Bearer error="invalid_token", error_description="Expected Bearer token"',
+    );
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -124,6 +135,33 @@ describe('Auth Middleware', () => {
     await middleware(req, res as any, next as NextFunction);
     expect(res._statusCode).toBe(401);
     expect((res._json as any).error.message).toContain('Token expired');
+    expect(res._headers['WWW-Authenticate']).toBe(
+      'Bearer error="invalid_token", error_description="Token expired"',
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('should reject with 403 when required scopes are missing', async () => {
+    const scopeLimitedProvider: AuthProvider = {
+      name: 'oidc',
+      validateCredential: vi.fn().mockResolvedValue({
+        ...mockIdentity,
+        scopes: ['read'],
+      }),
+    };
+    const middleware = createAuthMiddleware(scopeLimitedProvider, ['/health'], {
+      requiredScopes: ['write'],
+      resourceMetadataUrl: 'https://mcp.example.com/.well-known/oauth-protected-resource/http',
+    });
+    const req = createMockReq({ headers: { authorization: 'Bearer scope-token' } });
+    const res = createMockRes();
+    const next = vi.fn();
+
+    await middleware(req, res as any, next as NextFunction);
+    expect(res._statusCode).toBe(403);
+    expect(res._headers['WWW-Authenticate']).toBe(
+      'Bearer error="insufficient_scope", error_description="Missing required scopes: write", scope="write", resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/http"',
+    );
     expect(next).not.toHaveBeenCalled();
   });
 });

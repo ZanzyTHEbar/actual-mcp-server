@@ -18,36 +18,29 @@ export async function testMcpClient(advertisedUrl: string, port: number, httpPat
 
   console.info(`MCP client test: probing ${probeUrl}`);
   const probeRes = await fetchFn(probeUrl, { method: 'GET' });
-  if (!probeRes.ok) {
-    throw new Error(`Probe GET failed: ${probeRes.status} ${probeRes.statusText}`);
-  }
-  const probeJsonRaw = await probeRes.json() as unknown;
-  const probeJsonObj = probeJsonRaw && typeof probeJsonRaw === 'object' ? (probeJsonRaw as Record<string, unknown>) : undefined;
-  const resultRaw = probeJsonObj && 'result' in probeJsonObj ? probeJsonObj.result : probeJsonRaw;
-  if (!resultRaw) throw new Error('Probe response missing result');
-
-  // validate presence and types with runtime guards
-  const resultObj = resultRaw && typeof resultRaw === 'object' ? (resultRaw as Record<string, unknown>) : undefined;
-  if (!resultObj) throw new Error('Probe result is not an object');
-
-  const serverInstructions = resultObj['serverInstructions'];
-  if (serverInstructions && typeof serverInstructions === 'object') {
-    if (typeof (serverInstructions as Record<string, unknown>)['instructions'] !== 'string') {
-      throw new Error('serverInstructions missing or wrong type');
+  if (probeRes.status === 404) {
+    console.info('Probe skipped: OAuth protected-resource metadata not advertised for this transport/auth mode');
+  } else {
+    if (!probeRes.ok) {
+      throw new Error(`Probe GET failed: ${probeRes.status} ${probeRes.statusText}`);
     }
-  }
+    const probeJsonRaw = await probeRes.json() as unknown;
+    const probeJson = probeJsonRaw && typeof probeJsonRaw === 'object'
+      ? (probeJsonRaw as Record<string, unknown>)
+      : undefined;
+    if (!probeJson) throw new Error('Probe response is not an object');
 
-  const capabilitiesVal = resultObj['capabilities'];
-  if (!capabilitiesVal || typeof capabilitiesVal !== 'object' || !('tools' in (capabilitiesVal as Record<string, unknown>))) {
-    throw new Error('capabilities.tools missing or wrong type');
+    if (typeof probeJson['resource'] !== 'string') {
+      throw new Error('protected-resource metadata missing resource');
+    }
+    if (!Array.isArray(probeJson['authorization_servers'])) {
+      throw new Error('protected-resource metadata missing authorization_servers');
+    }
+    if (!Array.isArray(probeJson['bearer_methods_supported'])) {
+      throw new Error('protected-resource metadata missing bearer_methods_supported');
+    }
+    console.info('Probe OK: protected-resource metadata present');
   }
-
-  const toolsVal = resultObj['tools'];
-  if (!Array.isArray(toolsVal)) {
-    throw new Error('tools missing or not array');
-  }
-
-  console.info('Probe OK: capabilities/tools/serverInstructions present');
 
   // Now do JSON-RPC initialize + tools/list using the HTTP endpoint
   const rpcUrl = `${base.origin}${httpPath}`;

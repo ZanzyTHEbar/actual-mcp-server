@@ -48,7 +48,7 @@ describe('createAuthProvider', () => {
   it('should return OidcAuthProvider when AUTH_PROVIDER=oidc', () => {
     (config as any).AUTH_PROVIDER = 'oidc';
     (config as any).OIDC_ISSUER = 'https://auth.example.com';
-    (config as any).OIDC_CLIENT_ID = 'client-id';
+    (config as any).OIDC_AUDIENCE = 'actual-mcp';
     const provider = createAuthProvider();
     expect(provider).not.toBeNull();
     expect(provider!.name).toBe('oidc');
@@ -56,7 +56,14 @@ describe('createAuthProvider', () => {
 
   it('should throw when OIDC is configured without OIDC_ISSUER', () => {
     (config as any).AUTH_PROVIDER = 'oidc';
+    (config as any).OIDC_AUDIENCE = 'actual-mcp';
     expect(() => createAuthProvider()).toThrow('OIDC_ISSUER');
+  });
+
+  it('should throw when OIDC is configured without audience or resource', () => {
+    (config as any).AUTH_PROVIDER = 'oidc';
+    (config as any).OIDC_ISSUER = 'https://auth.example.com';
+    expect(() => createAuthProvider()).toThrow('OIDC_AUDIENCE or OIDC_RESOURCE');
   });
 
   it('should return LdapAuthProvider when AUTH_PROVIDER=ldap', () => {

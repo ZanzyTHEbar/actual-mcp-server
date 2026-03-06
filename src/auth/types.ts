@@ -10,6 +10,10 @@ export interface AuthIdentity {
   email?: string;
   /** Group memberships, if resolved. */
   groups?: string[];
+  /** OAuth/OIDC scopes resolved from the credential, if present. */
+  scopes?: string[];
+  /** Issuer identifier, when provided by the auth system. */
+  issuer?: string;
   /** Raw claims / attributes from the identity provider. */
   claims?: Record<string, unknown>;
 }

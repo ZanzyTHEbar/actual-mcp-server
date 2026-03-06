@@ -6,6 +6,8 @@ export interface OidcProviderOptions {
   issuer: string;
   clientId?: string;
   audience?: string;
+  resource?: string;
+  requiredScopes?: string[];
 }
 
 /**
@@ -16,22 +18,60 @@ export interface OidcProviderOptions {
 export class OidcAuthProvider implements AuthProvider {
   readonly name = 'oidc';
   private jwks: jose.JWTVerifyGetKey | null = null;
+  private discoveryPromise: Promise<{ issuer: string; jwksUri: string }> | null = null;
   private readonly issuer: string;
   private readonly audience: string | undefined;
 
   constructor(private readonly options: OidcProviderOptions) {
     this.issuer = options.issuer;
-    this.audience = options.audience || options.clientId;
+    this.audience = options.audience || options.resource;
+  }
+
+  private async discoverOidcConfig(): Promise<{ issuer: string; jwksUri: string }> {
+    if (!this.discoveryPromise) {
+      this.discoveryPromise = (async () => {
+        const discoveryUrl = new URL(
+          `${this.issuer.replace(/\/$/, '')}/.well-known/openid-configuration`,
+        );
+        logger.info(`[OIDC] Discovering OIDC configuration from issuer: ${this.issuer}`);
+        const response = await fetch(discoveryUrl);
+        if (!response.ok) {
+          throw new Error(`OIDC discovery failed with status ${response.status}`);
+        }
+        const metadata = await response.json() as { issuer?: string; jwks_uri?: string };
+        if (!metadata.issuer || !metadata.jwks_uri) {
+          throw new Error('OIDC discovery response is missing issuer or jwks_uri');
+        }
+        if (metadata.issuer !== this.issuer) {
+          throw new Error(`OIDC discovery issuer mismatch: expected ${this.issuer}, got ${metadata.issuer}`);
+        }
+        return { issuer: metadata.issuer, jwksUri: metadata.jwks_uri };
+      })();
+    }
+    return this.discoveryPromise;
   }
 
   private async getJwks(): Promise<jose.JWTVerifyGetKey> {
     if (!this.jwks) {
-      logger.info(`[OIDC] Discovering JWKS from issuer: ${this.issuer}`);
-      this.jwks = jose.createRemoteJWKSet(
-        new URL(`${this.issuer.replace(/\/$/, '')}/.well-known/jwks.json`),
-      );
+      const discovery = await this.discoverOidcConfig();
+      this.jwks = jose.createRemoteJWKSet(new URL(discovery.jwksUri));
     }
     return this.jwks;
+  }
+
+  private extractScopes(payload: jose.JWTPayload): string[] {
+    const scopes = new Set<string>();
+    const scopeClaim = payload.scope;
+    if (typeof scopeClaim === 'string') {
+      for (const scope of scopeClaim.split(/\s+/).filter(Boolean)) scopes.add(scope);
+    }
+    const scpClaim = payload.scp;
+    if (Array.isArray(scpClaim)) {
+      for (const scope of scpClaim.filter((item): item is string => typeof item === 'string')) {
+        scopes.add(scope);
+      }
+    }
+    return [...scopes];
   }
 
   async validateCredential(token: string): Promise<AuthIdentity> {
@@ -53,11 +93,14 @@ export class OidcAuthProvider implements AuthProvider {
       throw new Error('JWT has no sub, email, or preferred_username claim');
     }
 
+    const scopes = this.extractScopes(payload);
     const identity: AuthIdentity = {
       userId,
       displayName: (payload.name || payload.preferred_username) as string | undefined,
       email: payload.email as string | undefined,
       groups: Array.isArray(payload.groups) ? (payload.groups as string[]) : undefined,
+      scopes,
+      issuer: this.issuer,
       claims: payload as Record<string, unknown>,
     };
 

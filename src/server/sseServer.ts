@@ -14,6 +14,7 @@ import { ensureCallToolResult, toTextResult } from '../lib/toolResult.js';
 import type { AuthProvider, AuthIdentity } from '../auth/types.js';
 import { createAuthMiddleware, getIdentityFromLocals } from '../auth/auth-middleware.js';
 import { requestContext } from '../lib/requestContext.js';
+import { buildProtectedResourceMetadata } from './protectedResourceMetadata.js';
 
 export async function startSseServer(
   mcp: ActualMCPConnection,
@@ -29,12 +30,29 @@ export async function startSseServer(
 ) {
   const app = express();
   const httpServer = createServer(app);
+  const protectedResourceMetadataPath = '/.well-known/oauth-protected-resource/sse';
+  const resolvePublicBaseUrl = (req?: Request): string => {
+    if (req) {
+      const host = req.get('host');
+      if (host) {
+        return `${req.protocol}://${host}`;
+      }
+    }
+    return `http://localhost:${port}`;
+  };
 
   app.use(express.json());
 
   const resolvedAuthProvider = authProvider ?? null;
   if (resolvedAuthProvider) {
-    app.use(createAuthMiddleware(resolvedAuthProvider, ['/health', '/metrics']));
+    app.use(createAuthMiddleware(
+      resolvedAuthProvider,
+      ['/health', '/metrics', '/.well-known'],
+      {
+        requiredScopes: resolvedAuthProvider.name === 'oidc' ? config.OIDC_SCOPES : [],
+        resourceMetadataUrl: (req) => `${resolvePublicBaseUrl(req)}${protectedResourceMetadataPath}`,
+      },
+    ));
     logger.info(`[SSE Auth] ${resolvedAuthProvider.name.toUpperCase()} auth middleware mounted`);
   }
 
@@ -196,6 +214,26 @@ export async function startSseServer(
   };
 
   // SSE endpoint for establishing the stream
+  if (resolvedAuthProvider?.name === 'oidc') {
+    app.get('/.well-known/oauth-protected-resource', (req: Request, res: Response) => {
+      const publicBaseUrl = resolvePublicBaseUrl(req);
+      res.json(buildProtectedResourceMetadata({
+        authProvider: resolvedAuthProvider,
+        resourceUrl: `${publicBaseUrl}${ssePath}`,
+        documentationUrl: `${publicBaseUrl}${protectedResourceMetadataPath}`,
+      }));
+    });
+
+    app.get(protectedResourceMetadataPath, (req: Request, res: Response) => {
+      const publicBaseUrl = resolvePublicBaseUrl(req);
+      res.json(buildProtectedResourceMetadata({
+        authProvider: resolvedAuthProvider,
+        resourceUrl: `${publicBaseUrl}${ssePath}`,
+        documentationUrl: `${publicBaseUrl}${protectedResourceMetadataPath}`,
+      }));
+    });
+  }
+
   app.get(ssePath, async (req: Request, res: Response) => {
     const clientIp = req.ip || req.connection.remoteAddress || 'unknown IP';
 
@@ -225,7 +263,7 @@ export async function startSseServer(
 
       transports[sessionId] = transport;
 
-      await sessionWorkerManager.createSession(sessionId);
+      await sessionWorkerManager.createSession(sessionId, initIdentity);
 
       const KEEPALIVE_INTERVAL_MS = 30_000;
       const keepaliveTimer = setInterval(() => {
@@ -337,4 +375,17 @@ export async function startSseServer(
       logger.warn(`⚠️  SSE authentication disabled (no MCP_SSE_AUTHORIZATION set)`);
     }
   });
+
+  const cleanup = async () => {
+    for (const sessionId of Object.keys(transports)) {
+      delete transports[sessionId];
+      sessionIdentities.delete(sessionId);
+      await sessionWorkerManager.closeSession(sessionId);
+    }
+  };
+
+  process.on('SIGTERM', cleanup);
+  process.on('SIGINT', cleanup);
+
+  return { app, httpServer, cleanup };
 }

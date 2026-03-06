@@ -21,12 +21,20 @@ import { OidcAuthProvider } from '../../src/auth/oidc-provider.js';
 
 describe('OidcAuthProvider', () => {
   let provider: OidcAuthProvider;
+  const mockFetch = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal('fetch', mockFetch);
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        issuer: 'https://auth.example.com',
+        jwks_uri: 'https://auth.example.com/keys',
+      }),
+    });
     provider = new OidcAuthProvider({
       issuer: 'https://auth.example.com',
-      clientId: 'my-client-id',
       audience: 'my-audience',
     });
   });
@@ -116,9 +124,8 @@ describe('OidcAuthProvider', () => {
   it('should use clientId as audience fallback', async () => {
     const p = new OidcAuthProvider({
       issuer: 'https://auth.example.com',
-      clientId: 'fallback-audience',
+      resource: 'https://mcp.example.com',
     });
-    // The audience is set internally; we test by calling validate
     mockJwtVerify.mockResolvedValueOnce({
       payload: { sub: 'test' },
       protectedHeader: {},
@@ -127,7 +134,17 @@ describe('OidcAuthProvider', () => {
     await p.validateCredential('test-token');
     expect(mockJwtVerify).toHaveBeenCalledWith('test-token', 'mock-jwks', {
       issuer: 'https://auth.example.com',
-      audience: 'fallback-audience',
+      audience: 'https://mcp.example.com',
     });
+  });
+
+  it('fails closed when discovery fails', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    });
+
+    await expect(provider.validateCredential('test-token')).rejects.toThrow(/OIDC discovery failed/i);
   });
 });

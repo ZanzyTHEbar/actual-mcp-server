@@ -20,11 +20,16 @@ export function createAuthProvider(): AuthProvider | null {
     if (!config.OIDC_ISSUER) {
       throw new Error('AUTH_PROVIDER=oidc requires OIDC_ISSUER to be set');
     }
+    if (!config.OIDC_AUDIENCE && !config.OIDC_RESOURCE) {
+      throw new Error('AUTH_PROVIDER=oidc requires OIDC_AUDIENCE or OIDC_RESOURCE to be set');
+    }
     logger.info(`[Auth] Using OIDC provider (issuer: ${config.OIDC_ISSUER})`);
     return new OidcAuthProvider({
       issuer: config.OIDC_ISSUER,
       clientId: config.OIDC_CLIENT_ID,
       audience: config.OIDC_AUDIENCE,
+      resource: config.OIDC_RESOURCE,
+      requiredScopes: config.OIDC_SCOPES,
     });
   }
 

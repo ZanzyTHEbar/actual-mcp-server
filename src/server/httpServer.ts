@@ -18,6 +18,7 @@ import config from '../config.js';
 import { requestContext } from '../lib/requestContext.js';
 import type { AuthProvider, AuthIdentity } from '../auth/types.js';
 import { createAuthMiddleware, getIdentityFromLocals } from '../auth/auth-middleware.js';
+import { buildProtectedResourceMetadata } from './protectedResourceMetadata.js';
 
 // Re-export for backward compatibility
 export { requestContext };
@@ -38,12 +39,33 @@ export async function startHttpServer(
 ) {
   const app = express();
   app.use(express.json());
+  const protectedResourceMetadataPath = '/.well-known/oauth-protected-resource/http';
+  const resolvePublicBaseUrl = (req?: Request): string => {
+    if (advertisedUrl) {
+      return new URL(advertisedUrl).origin;
+    }
+    if (req) {
+      const host = req.get('host');
+      if (host) {
+        return `${req.protocol}://${host}`;
+      }
+    }
+    const serverIp = process.env.MCP_BRIDGE_PUBLIC_HOST || getLocalIp();
+    return `http://${serverIp}:${port}`;
+  };
 
   // Mount OIDC/LDAP auth middleware if a provider is configured.
   // When authProvider is active, it replaces the legacy MCP_SSE_AUTHORIZATION check.
   const resolvedAuthProvider = authProvider ?? null;
   if (resolvedAuthProvider) {
-    app.use(createAuthMiddleware(resolvedAuthProvider, ['/health', '/metrics', '/.well-known']));
+    app.use(createAuthMiddleware(
+      resolvedAuthProvider,
+      ['/health', '/metrics', '/.well-known'],
+      {
+        requiredScopes: resolvedAuthProvider.name === 'oidc' ? config.OIDC_SCOPES : [],
+        resourceMetadataUrl: (req) => `${resolvePublicBaseUrl(req)}${protectedResourceMetadataPath}`,
+      },
+    ));
     logger.info(`[Auth] ${resolvedAuthProvider.name.toUpperCase()} auth middleware mounted`);
   }
 
@@ -387,7 +409,7 @@ export async function startHttpServer(
 
             // Initialize connection pool for this session
             try {
-              await sessionWorkerManager.createSession(sid);
+              await sessionWorkerManager.createSession(sid, initIdentity);
               // Only add to transports/activity map if worker session initialized
               transports.set(sid, transport);
               sessionLastActivity.set(sid, Date.now());
@@ -522,6 +544,9 @@ export async function startHttpServer(
 
   // GET for SSE connect (reuse transport)
   app.get(httpPath, async (req: Request, res: Response) => {
+    if (!authenticateRequest(req, res)) {
+      return;
+    }
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId) {
       res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'No session id' }, id: null });
@@ -538,33 +563,27 @@ export async function startHttpServer(
 
   // quick GET info endpoints (some clients probe)
   const serverIp = process.env.MCP_BRIDGE_PUBLIC_HOST || getLocalIp();
-  app.get('/.well-known/oauth-protected-resource', (_req, res) => {
-    res.json({
-      jsonrpc: '2.0',
-      result: {
-        description: serverDescription || "Actual MCP server",
-        instructions: serverInstructions || "Welcome to the Actual MCP server.",
-        serverInstructions: { instructions: serverInstructions || "Welcome to the Actual MCP server." },
-        capabilities: capabilities && Object.keys(capabilities).length ? capabilities : { tools: toolsList.reduce((a: Record<string, object>, n: string) => ({ ...a, [n]: {} }), {}) },
-        tools: toolsList,
-        advertisedUrl: advertisedUrl || `http://${serverIp}:${port}${httpPath}`,
-      },
+  if (resolvedAuthProvider?.name === 'oidc') {
+    app.get('/.well-known/oauth-protected-resource', (req, res) => {
+      const publicBaseUrl = resolvePublicBaseUrl(req);
+      const resourceUrl = advertisedUrl || `${publicBaseUrl}${httpPath}`;
+      res.json(buildProtectedResourceMetadata({
+        authProvider: resolvedAuthProvider,
+        resourceUrl,
+        documentationUrl: `${publicBaseUrl}${protectedResourceMetadataPath}`,
+      }));
     });
-  });
 
-  app.get('/.well-known/oauth-protected-resource/http', (_req, res) => {
-    res.json({
-      jsonrpc: '2.0',
-      result: {
-        description: serverDescription || "Actual MCP server",
-        instructions: serverInstructions || "Welcome to the Actual MCP server.",
-        serverInstructions: { instructions: serverInstructions || "Welcome to the Actual MCP server." },
-        capabilities: capabilities && Object.keys(capabilities).length ? capabilities : { tools: toolsList.reduce((a: Record<string, object>, n: string) => ({ ...a, [n]: {} }), {}) },
-        tools: toolsList,
-        advertisedUrl: advertisedUrl || `http://${serverIp}:${port}${httpPath}`,
-      },
+    app.get(protectedResourceMetadataPath, (req, res) => {
+      const publicBaseUrl = resolvePublicBaseUrl(req);
+      const resourceUrl = advertisedUrl || `${publicBaseUrl}${httpPath}`;
+      res.json(buildProtectedResourceMetadata({
+        authProvider: resolvedAuthProvider,
+        resourceUrl,
+        documentationUrl: `${publicBaseUrl}${protectedResourceMetadataPath}`,
+      }));
     });
-  });
+  }
 
   app.get('/health', (_req, res) => {
     const stats = sessionWorkerManager.getStats();

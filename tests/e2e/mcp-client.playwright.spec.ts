@@ -27,7 +27,7 @@ async function waitForMCPHealth(request: any, url: string, maxRetries = HEALTH_C
     } catch (error) {
       console.log(`[HEALTH CHECK ${i + 1}/${maxRetries}] Error:`, error instanceof Error ? error.message : String(error));
     }
-    
+
     if (i < maxRetries - 1) {
       console.log(`⏳ Waiting ${HEALTH_CHECK_DELAY_MS}ms before next health check...`);
       await new Promise((r) => setTimeout(r, HEALTH_CHECK_DELAY_MS));
@@ -64,13 +64,13 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
     if (useDockerServer) {
       // Use the MCP server running in Docker (localhost:3602)
       console.log('🐳 Using MCP server from Docker at', advertisedUrl);
-      
+
       // Wait for MCP server to be healthy
       const isHealthy = await waitForMCPHealth(request, `${advertisedUrl}/health`);
       if (!isHealthy) {
         throw new Error('MCP server did not become healthy in time. Check Docker logs.');
       }
-      
+
       return;  // Skip spawning a new server
     }
 
@@ -79,7 +79,7 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
     const node = process.execPath;
     const entry = path.join(ROOT, 'dist', 'src', 'index.js');
     const args = ['--debug', '--http'];  // No need for '--' when calling node directly
-    
+
     // Provide minimal test env vars for E2E tests
     const testEnv = {
       ...process.env,
@@ -91,7 +91,7 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
       MCP_BRIDGE_PORT: '3601',  // Use different port for E2E tests
       MCP_BRIDGE_PUBLIC_HOST: 'localhost',  // Force localhost instead of external IP
     };
-    
+
     serverProc = spawn(node, [entry, ...args], { cwd: ROOT, env: testEnv });
 
     // capture stdout/stderr and wait for the advertised URL line
@@ -111,7 +111,7 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
         ready = true;
       }
     }
-    
+
     function onStderr(chunk: Buffer) {
       const s = chunk.toString();
       stderr += s;
@@ -157,17 +157,21 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
 
   test('initialize -> tools/list -> tools/call -> SSE connect', async ({ request }) => {
     console.log('🧪 Starting E2E test...');
-    
+
     // 1) probe well-known resource with retry
     const probeUrl = new URL('/.well-known/oauth-protected-resource', advertisedUrl).toString();
     const probeRes = await retryRequest(() => request.get(probeUrl));
-    expect(probeRes.ok()).toBeTruthy();
-    const probeJson = await probeRes.json();
-    const probeResult = probeJson?.result ?? probeJson;
-    expect(probeResult).toBeTruthy();
-    expect(typeof probeResult.capabilities).toBe('object');
-    expect(typeof probeResult.capabilities.tools === 'object' || Array.isArray(probeResult.tools)).toBeTruthy();
-    console.log('✅ Well-known resource probe successful');
+    if (probeRes.status() === 404) {
+      console.log('ℹ OAuth protected-resource metadata not advertised for this transport/auth mode');
+    } else {
+      expect(probeRes.ok()).toBeTruthy();
+      const probeJson = await probeRes.json();
+      expect(probeJson).toBeTruthy();
+      expect(typeof probeJson.resource).toBe('string');
+      expect(Array.isArray(probeJson.authorization_servers)).toBeTruthy();
+      expect(Array.isArray(probeJson.bearer_methods_supported)).toBeTruthy();
+      console.log('✅ Well-known protected-resource probe successful');
+    }
 
     // 2) initialize JSON-RPC with retry
     const rpcUrl = new URL(httpPath, advertisedUrl).toString();
@@ -268,7 +272,7 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
     console.log(`🔧 Testing ${listed.length} tools...`);
     let successCount = 0;
     let errorCount = 0;
-    
+
     for (const t of listed) {
       const name = t.name;
       const callPayload = {
@@ -277,7 +281,7 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
         method: 'tools/call',
         params: { name, arguments: {} },
       };
-      
+
       try {
         const callRes = await retryRequest(() => request.post(rpcUrl, {
           data: JSON.stringify(callPayload),
@@ -287,7 +291,7 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
             ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
           },
         }), 2, 500);  // Reduced retries for tool calls to avoid long test times
-        
+
         // call may return error object but HTTP should be ok (200)
         // If not ok, log the status and response for debugging
         if (!callRes.ok()) {
@@ -296,7 +300,7 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
           errorCount++;
           continue;
         }
-        
+
         const callJson = await callRes.json();
         // either a result or an error object is acceptable; assert shape
         expect(callJson).toBeTruthy();
@@ -312,7 +316,7 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
         errorCount++;
       }
     }
-    
+
     console.log(`📊 Tool test results: ${successCount} succeeded, ${errorCount} failed/errored`);
     // At least some tools should work (even if Actual server has issues, basic tools should respond)
     expect(successCount).toBeGreaterThan(0);
@@ -344,7 +348,7 @@ test.describe('MCP end-to-end (initialize, tools/list, tools/call, SSE)', () => 
       // runtime skip: no session id available, skip SSE connect check
       console.log('⏭️  Skipping SSE connect check: no session id from initialize');
     }
-    
+
     console.log('✅ All E2E tests completed successfully!');
   });
 
