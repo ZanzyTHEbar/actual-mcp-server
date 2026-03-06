@@ -415,7 +415,7 @@ You can manually trigger the workflow from the GitHub Actions tab with customiza
 The workflow is specifically tailored for this Node.js 20 + TypeScript project:
 - Uses `npm ci` for consistent dependency installation
 - Runs TypeScript compilation via `npm run build`
-- Executes project-specific test commands (`test:adapter`, `test:unit-js`, `test:e2e`)
+- Executes project-specific test commands (`test:unit`, `test:adapter`, generated-tools smoke, `test:e2e`)
 - Leverages existing `package.json` scripts
 
 ### 🏗️ Pipeline Stages
@@ -423,8 +423,8 @@ The workflow is specifically tailored for this Node.js 20 + TypeScript project:
 #### 1. **Lint & Type Check**
 - TypeScript compilation check
 - Coverage analysis (37 tools, 76% API coverage)
-- Dependency vulnerability scanning (npm audit)
-- Non-blocking - allows pipeline to continue
+- Dependency vulnerability scanning (npm audit with branch policy)
+- Protected refs (`main`/tags) block on high vulnerabilities
 
 #### 2. **Test Suite**
 - Adapter unit tests with live Actual API
@@ -622,11 +622,15 @@ act push
 npm ci
 npm run build
 npm run check:coverage
-npm audit
+npm audit --audit-level=high
 
 # Run tests
+npm run test:unit
 npm run test:adapter
-npm run test:unit-js
+ACTUAL_SERVER_URL=http://localhost:5006 \
+ACTUAL_PASSWORD=dummy-password-for-tests \
+ACTUAL_BUDGET_SYNC_ID=00000000-0000-0000-0000-000000000000 \
+node tests/unit/generated_tools.smoke.test.js
 npm run test:e2e
 
 # Build Docker image
@@ -647,6 +651,7 @@ npx tsc --noEmit
 **Symptom**: Test failures
 ```bash
 # Solution: Run tests locally
+npm run test:unit
 npm run test:adapter
 npm run test:e2e
 ```

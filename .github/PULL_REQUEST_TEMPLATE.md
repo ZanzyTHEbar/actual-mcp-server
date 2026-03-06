@@ -40,7 +40,13 @@ Please describe the tests that you ran to verify your changes:
 ```bash
 # Commands you ran for testing
 npm run test:unit
-npm run dev -- --test-actual-tools
+npm run test:adapter
+
+# Optional smoke check (matches CI generated-tools smoke job)
+ACTUAL_SERVER_URL=http://localhost:5006 \
+ACTUAL_PASSWORD=dummy-password-for-tests \
+ACTUAL_BUDGET_SYNC_ID=00000000-0000-0000-0000-000000000000 \
+node tests/unit/generated_tools.smoke.test.js
 ```
 
 ## ✅ Checklist
