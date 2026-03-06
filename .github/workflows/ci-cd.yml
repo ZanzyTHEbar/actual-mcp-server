@@ -176,12 +176,24 @@ jobs:
       - name: 🏗️ Build project
         run: npm run build
 
-      - name: 🔐 Run npm audit
+      - name: 🔐 Run npm audit (branch policy)
         run: |
           echo "Running npm audit..."
-          npm audit --audit-level=high || echo "⚠️ Vulnerabilities found, but continuing..."
+          if [[ "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "Protected ref detected (${GITHUB_REF}) -> blocking on high vulnerabilities"
+            npm audit --audit-level=high
+          else
+            echo "Non-protected ref (${GITHUB_REF}) -> advisory only"
+            npm audit --audit-level=high || echo "⚠️ Vulnerabilities found (non-blocking on non-protected refs)"
+          fi
 
-      - name: 🧪 Run unit smoke tests
+      - name: 🧪 Run unit test suites (Vitest)
+        run: npm run test:unit
+
+      - name: 🧪 Run adapter test suites
+        run: npm run test:adapter
+
+      - name: 🧪 Run generated tools smoke tests
         env:
           # Dummy credentials for smoke tests (don't connect to actual server)
           ACTUAL_SERVER_URL: http://localhost:5006
@@ -275,8 +287,18 @@ jobs:
       always() &&
       needs.version.result == 'success' &&
       needs.lint.result == 'success' &&
-      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
-      (needs.docker-e2e.result == 'success' || needs.docker-e2e.result == 'skipped') &&
+      (
+        (
+          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) &&
+          needs.test.result == 'success' &&
+          needs.docker-e2e.result == 'success'
+        ) ||
+        (
+          !(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) &&
+          (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+          (needs.docker-e2e.result == 'success' || needs.docker-e2e.result == 'skipped')
+        )
+      ) &&
       needs.validate-short-description.result == 'success' &&
       github.event.inputs.skip_docker_publish != 'true' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' ||
@@ -406,13 +428,25 @@ jobs:
           build-args: |
             VERSION=${{ needs.version.outputs.version }}
 
-      - name: 🔍 Run Trivy vulnerability scanner
+      - name: 🔍 Run Trivy vulnerability scanner (strict on protected refs)
+        if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE_NAME }}:scan
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: 🔍 Run Trivy vulnerability scanner (advisory on non-protected refs)
+        if: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.DOCKER_IMAGE_NAME }}:scan
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
 
       - name: 📤 Upload Trivy results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3

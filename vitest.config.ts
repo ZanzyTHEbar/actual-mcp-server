@@ -5,7 +5,6 @@ export default defineConfig({
     include: [
       'tests/auth/**/*.test.ts',
       'tests/logger/**/*.test.ts',
-      'tests/unit/*.test.js',
     ],
     globals: false,
     testTimeout: 30000,
