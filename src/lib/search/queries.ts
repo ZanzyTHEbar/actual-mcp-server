@@ -65,6 +65,32 @@ export function setSyncTimestamp(db: DatabaseInstance, ts: string): void {
   db.prepare("INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_synced_at', ?)").run(ts);
 }
 
+export function getSyncMetaValue(db: DatabaseInstance, key: string): string | null {
+  const row = db.prepare('SELECT value FROM sync_meta WHERE key = ?').get(key) as SyncMetaRow | undefined;
+  return row?.value ?? null;
+}
+
+export function setSyncMetaValue(db: DatabaseInstance, key: string, value: string): void {
+  db.prepare('INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)').run(key, value);
+}
+
+export function getSyncMetaInt(db: DatabaseInstance, key: string): number {
+  const value = getSyncMetaValue(db, key);
+  if (value === null) return 0;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function setSyncMetaInt(db: DatabaseInstance, key: string, value: number): void {
+  setSyncMetaValue(db, key, String(value));
+}
+
+export function incrementSyncMetaInt(db: DatabaseInstance, key: string): number {
+  const next = getSyncMetaInt(db, key) + 1;
+  setSyncMetaInt(db, key, next);
+  return next;
+}
+
 // ---------------------------------------------------------------------------
 // Embedding cache
 // ---------------------------------------------------------------------------

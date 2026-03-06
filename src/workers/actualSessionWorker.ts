@@ -2,16 +2,23 @@ import { parentPort, workerData } from 'worker_threads';
 import logger from '../logger.js';
 import actualToolsManager from '../actualToolsManager.js';
 import { ensureCallToolResult } from '../lib/toolResult.js';
+import { markSearchIndexDirty } from '../lib/search/syncState.js';
+import { getSearchIndex } from '../lib/search/searchRuntime.js';
 
 type WorkerMessage =
   | { type: 'executeTool'; requestId: string; toolName: string; args: unknown }
+  | { type: 'markSearchDirty'; budgetId?: string }
   | { type: 'shutdown' };
 
 const sessionId = workerData?.sessionId as string | undefined;
 const dataDir = workerData?.dataDir as string | undefined;
+const searchIndexDir = workerData?.searchIndexDir as string | undefined;
 
 if (dataDir) {
   process.env.MCP_BRIDGE_DATA_DIR = dataDir;
+}
+if (searchIndexDir) {
+  process.env.SEARCH_INDEX_DIR = searchIndexDir;
 }
 process.env.USE_CONNECTION_POOL = 'false';
 
@@ -34,6 +41,21 @@ parentPort?.on('message', async (message: WorkerMessage) => {
   if (message.type === 'shutdown') {
     logger.info(`[Worker] Shutdown requested for session ${sessionId || 'unknown'}`);
     process.exit(0);
+  }
+
+  if (message.type === 'markSearchDirty') {
+    try {
+      markSearchIndexDirty(message.budgetId);
+      const index = getSearchIndex();
+      if (index) {
+        index.bumpDirtyGeneration();
+      }
+    } catch (err) {
+      logger.warn(
+        `[Worker] Failed to mark search dirty for session ${sessionId || 'unknown'}: ${String(err)}`,
+      );
+    }
+    return;
   }
 
   if (message.type === 'executeTool') {

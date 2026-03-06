@@ -13,6 +13,7 @@ export const configSchema = z.object({
   MCP_HTTPS_KEY: z.string().optional(),
   MAX_CONCURRENT_SESSIONS: z.string().default('5').transform(val => parseInt(val, 10)),
   SESSION_IDLE_TIMEOUT_MINUTES: z.string().default('10').transform(val => parseInt(val, 10)),
+  SESSION_TOOL_TIMEOUT_MS: z.string().default('45000').transform(val => parseInt(val, 10)),
   MCP_SESSION_CACHE_CLEANUP: z.string().optional().default('true').transform(val => val === 'true'),
 
   // Search & caching

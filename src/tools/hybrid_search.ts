@@ -19,14 +19,20 @@ import {
   getSearchRuntime,
 } from '../lib/search/index.js';
 import type { EmbeddingProvider } from '../lib/search/index.js';
-import { isSearchIndexSynced, markSearchIndexSynced } from '../lib/search/syncState.js';
+import {
+  hydrateSearchSyncState,
+  isSearchIndexSynced,
+  markSearchIndexSyncedIfGeneration,
+} from '../lib/search/syncState.js';
 import type {
   IndexedTransaction,
   RefAccount,
   RefCategory,
   RefPayee,
   HybridSearchQuery,
+  SearchResponse,
 } from '../lib/search/index.js';
+import { toErrorResult } from '../lib/toolResult.js';
 import logger from '../logger.js';
 
 /**
@@ -78,92 +84,121 @@ const InputSchema = z.object({
 });
 
 // No local singletons — use shared search runtime from searchRuntime.ts
+const _syncInFlight = new Map<string, Promise<void>>();
 
 /**
  * Sync the search index from Actual Budget data.
  * Called lazily on first search, then cached until invalidation.
  */
 async function ensureSynced(index: SearchIndex): Promise<void> {
-  if (isSearchIndexSynced()) return;
+  const budgetId = process.env.ACTUAL_BUDGET_SYNC_ID ?? '__default__';
+  if (isSearchIndexSynced(budgetId)) return;
 
-  const cache = getResponseCache();
-  const startMs = Date.now();
-  logger.info('[HybridSearch] Syncing search index from Actual Budget…');
+  const inFlight = _syncInFlight.get(budgetId);
+  if (inFlight) {
+    await inFlight;
+    return;
+  }
 
-  const [accounts, categories, payees] = await Promise.all([
-    cache.getOrFetch<RefAccount[]>('ref:accounts', {
-      ttlMs: 10 * 60_000,
-      tags: ['accounts'],
-      fetcher: async () => {
-        const raw = await adapter.getAccounts();
-        return raw.filter((a) => a.id).map((a) => ({ id: a.id!, name: a.name ?? '' }));
-      },
-    }),
-    cache.getOrFetch<RefCategory[]>('ref:categories', {
-      ttlMs: 10 * 60_000,
-      tags: ['categories'],
-      fetcher: async () => {
-        const raw = await adapter.getCategories();
-        return raw.filter((c) => c.id).map((c) => ({
-          id: c.id!,
-          name: c.name ?? '',
-          group_id: c.parentId ?? '',
-          group_name: '',
-        }));
-      },
-    }),
-    cache.getOrFetch<RefPayee[]>('ref:payees', {
-      ttlMs: 10 * 60_000,
-      tags: ['payees'],
-      fetcher: async () => {
-        const raw = await adapter.getPayees();
-        return raw.filter((p) => p.id).map((p) => ({ id: p.id!, name: p.name ?? '' }));
-      },
-    }),
-  ]);
+  const syncPromise = (async () => {
+    const { dirtyGeneration: startDirtyGeneration } = index.getSyncVersions();
 
-  // Build lookup maps
-  const accountMap = new Map(accounts.map((a) => [a.id, a.name]));
-  const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
-  const payeeMap = new Map(payees.map((p) => [p.id, p.name]));
+    const cache = getResponseCache();
+    const startMs = Date.now();
+    logger.info('[HybridSearch] Syncing search index from Actual Budget…');
 
-  // Populate reference tables
-  index.populateAccounts(accounts);
-  index.populateCategories(categories);
-  index.populatePayees(payees);
+    const [accounts, categories, payees] = await Promise.all([
+      cache.getOrFetch<RefAccount[]>('ref:accounts', {
+        ttlMs: 10 * 60_000,
+        tags: ['accounts'],
+        fetcher: async () => {
+          const raw = await adapter.getAccounts();
+          return raw.filter((a) => a.id).map((a) => ({ id: a.id!, name: a.name ?? '' }));
+        },
+      }),
+      cache.getOrFetch<RefCategory[]>('ref:categories', {
+        ttlMs: 10 * 60_000,
+        tags: ['categories'],
+        fetcher: async () => {
+          const raw = await adapter.getCategories();
+          return raw.filter((c) => c.id).map((c) => ({
+            id: c.id!,
+            name: c.name ?? '',
+            group_id: c.parentId ?? '',
+            group_name: '',
+          }));
+        },
+      }),
+      cache.getOrFetch<RefPayee[]>('ref:payees', {
+        ttlMs: 10 * 60_000,
+        tags: ['payees'],
+        fetcher: async () => {
+          const raw = await adapter.getPayees();
+          return raw.filter((p) => p.id).map((p) => ({ id: p.id!, name: p.name ?? '' }));
+        },
+      }),
+    ]);
 
-  // Fetch all transactions. Runtime returns more fields than the generated type.
-  const rawTxns = await adapter.getTransactions(undefined, undefined, undefined) as unknown as ActualRawTransaction[];
+    // Build lookup maps
+    const accountMap = new Map(accounts.map((a) => [a.id, a.name]));
+    const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
+    const payeeMap = new Map(payees.map((p) => [p.id, p.name]));
 
-  const indexed: IndexedTransaction[] = rawTxns
-    .filter((t): t is ActualRawTransaction & { id: string } => Boolean(t.id))
-    .map((t) => ({
-      id: t.id,
-      date: t.date ?? '',
-      amount: t.amount ?? 0,
-      notes: t.notes ?? '',
-      payee_id: t.payee ?? '',
-      payee_name: payeeMap.get(t.payee ?? '') ?? '',
-      category_id: t.category ?? '',
-      category_name: categoryMap.get(t.category ?? '') ?? '',
-      account_id: t.account ?? '',
-      account_name: accountMap.get(t.account ?? '') ?? '',
-      is_transfer: Boolean(t.transfer_id),
-      cleared: Boolean(t.cleared),
-    }));
+    // Populate reference tables
+    index.populateAccounts(accounts);
+    index.populateCategories(categories);
+    index.populatePayees(payees);
 
-  // Index with embeddings (incremental — skips unchanged rows)
-  const wrote = await index.indexTransactions(indexed);
+    // Fetch all transactions. Runtime returns more fields than the generated type.
+    const rawTxns = await adapter.getTransactions(undefined, undefined, undefined) as unknown as ActualRawTransaction[];
 
-  // Prune rows that no longer exist in Actual Budget
-  const currentIds = new Set(indexed.map((t) => t.id));
-  const pruned = index.pruneStale(currentIds);
+    const indexed: IndexedTransaction[] = rawTxns
+      .filter((t): t is ActualRawTransaction & { id: string } => Boolean(t.id))
+      .map((t) => ({
+        id: t.id,
+        date: t.date ?? '',
+        amount: t.amount ?? 0,
+        notes: t.notes ?? '',
+        payee_id: t.payee ?? '',
+        payee_name: payeeMap.get(t.payee ?? '') ?? '',
+        category_id: t.category ?? '',
+        category_name: categoryMap.get(t.category ?? '') ?? '',
+        account_id: t.account ?? '',
+        account_name: accountMap.get(t.account ?? '') ?? '',
+        is_transfer: Boolean(t.transfer_id),
+        cleared: Boolean(t.cleared),
+      }));
 
-  markSearchIndexSynced();
-  logger.info(
-    `[HybridSearch] Sync done in ${Date.now() - startMs}ms: ` +
-    `${wrote} written, ${pruned} pruned, ${indexed.length} total`,
-  );
+    // Index with embeddings (incremental — skips unchanged rows)
+    const wrote = await index.indexTransactions(indexed);
+
+    // Prune rows that no longer exist in Actual Budget
+    const currentIds = new Set(indexed.map((t) => t.id));
+    const pruned = index.pruneStale(currentIds);
+
+    const persistedMarked = index.tryMarkSyncedGeneration(startDirtyGeneration);
+    const memoryMarked = markSearchIndexSyncedIfGeneration(startDirtyGeneration, budgetId);
+    if (!persistedMarked || !memoryMarked) {
+      const versions = index.getSyncVersions();
+      hydrateSearchSyncState(budgetId, versions.dirtyGeneration, versions.syncedGeneration);
+      logger.warn(
+        '[HybridSearch] Sync completed but freshness changed during run; leaving index marked unsynced',
+      );
+      return;
+    }
+
+    logger.info(
+      `[HybridSearch] Sync done in ${Date.now() - startMs}ms: ` +
+      `${wrote} written, ${pruned} pruned, ${indexed.length} total`,
+    );
+  })();
+
+  _syncInFlight.set(budgetId, syncPromise);
+  try {
+    await syncPromise;
+  } finally {
+    _syncInFlight.delete(budgetId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -193,13 +228,10 @@ const tool: ToolDefinition = {
       provider = runtime.provider;
     } catch (err) {
       logger.error('[HybridSearch] Failed to initialize search engine:', err);
-      return {
-        error: 'Search engine initialization failed. The search index may not be available.',
-        results: [],
-        totalMatched: 0,
+      return toErrorResult({
+        message: 'Search engine initialization failed. The search index may not be available.',
         mode: input.mode,
-        timing: { totalMs: 0 },
-      };
+      });
     }
 
     // Ensure index is populated
@@ -207,13 +239,10 @@ const tool: ToolDefinition = {
       await ensureSynced(index);
     } catch (err) {
       logger.error('[HybridSearch] Failed to sync search index:', err);
-      return {
-        error: 'Search index sync failed. Results may be incomplete or unavailable.',
-        results: [],
-        totalMatched: 0,
+      return toErrorResult({
+        message: 'Search index sync failed. Results may be incomplete or unavailable.',
         mode: input.mode,
-        timing: { totalMs: 0 },
-      };
+      });
     }
 
     // Auto-downgrade search mode if embeddings are unavailable
@@ -242,7 +271,16 @@ const tool: ToolDefinition = {
       },
     };
 
-    const response = await engine.search(searchQuery);
+    let response: SearchResponse;
+    try {
+      response = await engine.search(searchQuery);
+    } catch (err) {
+      logger.error('[HybridSearch] Query execution failed:', err);
+      return toErrorResult({
+        message: `Search query failed: ${err instanceof Error ? err.message : String(err)}`,
+        mode: effectiveMode,
+      });
+    }
 
     // Format for MCP response
     return {

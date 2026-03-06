@@ -3,6 +3,7 @@ import * as ActualApi from '@actual-app/api';
 import logger from './logger.js';
 import { z } from 'zod';
 import { invalidateAfterWrite, isWriteTool } from './lib/search/CacheInvalidator.js';
+import { normalizeToolName } from './lib/toolNameNormalization.js';
 
 import type { ZodTypeAny } from 'zod';
 import type { ToolDefinition } from '../types/tool.d.js';
@@ -26,7 +27,7 @@ const IMPLEMENTED_TOOLS = [
   'actual_budgets_setAmount',
   'actual_budgets_setCarryover',
   'actual_budgets_transfer',
-  'actual_budgets_updates_batch',
+  'actual_budget_updates_batch',
   'actual_categories_create',
   'actual_categories_delete',
   'actual_categories_get',
@@ -62,6 +63,8 @@ const IMPLEMENTED_TOOLS = [
   'actual_transactions_update',
   'actual_transactions_update_batch',
   'actual_hybrid_search',
+  'actual_search_similar',
+  'actual_search_index_info',
   'actual_server_info',
   'actual_session_close',
   'actual_session_list',
@@ -162,23 +165,25 @@ class ActualToolsManager {
   }
 
   getTool(name: string): ToolDefinition | undefined {
-    return this.tools.get(name);
+    const canonicalName = normalizeToolName(name);
+    return this.tools.get(canonicalName);
   }
 
   async callTool(name: string, args: unknown): Promise<unknown> {
-    const tool = this.getTool(name);
-    if (!tool) throw new Error(`Tool not found: ${name}`);
+    const canonicalName = normalizeToolName(name);
+    const tool = this.getTool(canonicalName);
+    if (!tool) throw new Error(`Tool not found: ${canonicalName}`);
     try {
       const callResult = await tool.call(args);
       if (callResult && typeof callResult === 'object' && 'content' in callResult) {
         const content = (callResult as { content?: unknown[] }).content;
         const count = Array.isArray(content) ? content.length : 0;
-        logger.info(`[TOOL RESULT] ${name}: contentItems=${count}`);
+        logger.info(`[TOOL RESULT] ${canonicalName}: contentItems=${count}`);
       }
 
       // Invalidate cache entries after successful write operations
-      if (isWriteTool(name)) {
-        invalidateAfterWrite(name);
+      if (isWriteTool(canonicalName)) {
+        invalidateAfterWrite(canonicalName);
       }
 
       return callResult;
@@ -191,13 +196,13 @@ class ActualToolsManager {
           return `${path}: ${issue.message}`;
         }).join(', ');
         const formattedMsg = `Validation error: ${issues}`;
-        logger.error(`[TOOL ERROR] ${name}: ${formattedMsg}`);
+        logger.error(`[TOOL ERROR] ${canonicalName}: ${formattedMsg}`);
         throw new Error(formattedMsg);
       }
 
       const e = err as Error | { message?: unknown } | undefined;
       const msg = e && typeof e.message === 'string' ? e.message : String(err);
-      logger.error(`[TOOL ERROR] ${name}: ${msg}`);
+      logger.error(`[TOOL ERROR] ${canonicalName}: ${msg}`);
       throw err;
     }
   }
@@ -207,16 +212,25 @@ class ActualToolsManager {
    */
   getCoverageStats() {
     const apiMethods = Object.keys(API_TOOL_MAP);
-    const mappedTools = Object.values(API_TOOL_MAP);
-    const implemented = IMPLEMENTED_TOOLS;
+    const mappedTools = Array.from(
+      new Set(Object.values(API_TOOL_MAP).map(normalizeToolName)),
+    );
+    const registeredTools = this.tools.size > 0
+      ? this.getToolNames()
+      : IMPLEMENTED_TOOLS;
+    const canonicalRegistered = new Set(registeredTools.map(normalizeToolName));
 
-    const missing = mappedTools.filter(tool => !implemented.includes(tool));
-    const coverage = (implemented.length / mappedTools.length) * 100;
+    const missing = mappedTools.filter((tool) => !canonicalRegistered.has(tool));
+    const coveredMappedTools = mappedTools.length - missing.length;
+    const coverage = mappedTools.length === 0
+      ? 100
+      : (coveredMappedTools / mappedTools.length) * 100;
 
     return {
       totalApiMethods: apiMethods.length,
       totalMappedTools: mappedTools.length,
-      implementedTools: implemented.length,
+      implementedTools: canonicalRegistered.size,
+      coveredMappedTools,
       missingTools: missing.length,
       coveragePercent: Math.round(coverage * 100) / 100,
       missingToolsList: missing,

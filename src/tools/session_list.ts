@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
-import { connectionPool } from '../lib/ActualConnectionPool.js';
+import { sessionWorkerManager } from '../lib/SessionWorkerManager.js';
 
 const InputSchema = z.object({});
 
@@ -10,14 +10,14 @@ const tool: ToolDefinition = {
   description: 'List all active MCP sessions with their activity status. Useful for diagnosing connection issues or seeing which sessions can be closed.',
   inputSchema: InputSchema,
   call: wrapToolCall(async (_args: unknown) => {
-    const stats = connectionPool.getStats();
-    
+    const stats = sessionWorkerManager.getStats();
+
     return {
       totalSessions: stats.totalSessions,
       activeSessions: stats.activeSessions,
       maxConcurrent: stats.maxConcurrent,
       availableSlots: stats.maxConcurrent - stats.activeSessions,
-      sessions: stats.sessions.map(s => ({
+      sessions: stats.sessions.map((s) => ({
         sessionId: s.sessionId,
         lastActivity: s.lastActivity,
         idleMinutes: s.idleMinutes,

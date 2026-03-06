@@ -9,7 +9,11 @@
 
 import { getResponseCache } from './ResponseCache.js';
 import { expandQuery } from './queryExpansion.js';
-import { analyzeQuery, stripExtractedPatterns } from './queryAnalyzer.js';
+import {
+  analyzeQuery,
+  deriveDateRangeFromHints,
+  stripExtractedPatterns,
+} from './queryAnalyzer.js';
 import { recordSearchQuery } from '../../observability.js';
 import logger from '../../logger.js';
 import type {
@@ -80,6 +84,7 @@ export class HybridSearchEngine {
     // negative cents, so "over $50" means amount <= -5000.
     const effectiveFilters = { ...query.filters };
     const userSetAmounts = effectiveFilters.minAmount !== undefined || effectiveFilters.maxAmount !== undefined;
+    const userSetDates = effectiveFilters.startDate !== undefined || effectiveFilters.endDate !== undefined;
     if (analysis.extractedAmounts && !userSetAmounts) {
       const { min, max } = analysis.extractedAmounts;
       if (min !== undefined && max !== undefined) {
@@ -95,6 +100,18 @@ export class HybridSearchEngine {
         // "under $50" → amount >= -5000
         effectiveFilters.minAmount = -max;
         logger.debug(`[HybridSearch] Applied extracted max amount: minAmount=${effectiveFilters.minAmount}`);
+      }
+    }
+
+    if (analysis.extractedDateHints && analysis.extractedDateHints.length > 0 && !userSetDates) {
+      const dateRange = deriveDateRangeFromHints(analysis.extractedDateHints);
+      if (dateRange?.startDate || dateRange?.endDate) {
+        if (dateRange.startDate) effectiveFilters.startDate = dateRange.startDate;
+        if (dateRange.endDate) effectiveFilters.endDate = dateRange.endDate;
+        logger.debug(
+          `[HybridSearch] Applied extracted date range: ` +
+          `${effectiveFilters.startDate ?? 'unset'}..${effectiveFilters.endDate ?? 'unset'}`,
+        );
       }
     }
 
@@ -141,13 +158,18 @@ export class HybridSearchEngine {
     let results: SearchResult[] = await this.executeMode(db, mode, ftsText, embeddingJson, effectiveFilters, limit, wFts, wVec);
 
     // Post-filter recall: if auto-derived amount filters produced zero results
-    // but we had query text, retry without them. Only relax auto-derived filters,
+    // (or auto-derived date filters) produced zero results but we had query text,
+    // retry without them. Only relax auto-derived filters,
     // never user-explicit ones.
     const autoFiltersApplied = analysis.extractedAmounts && !userSetAmounts
       && (effectiveFilters.minAmount !== undefined || effectiveFilters.maxAmount !== undefined);
-    if (results.length === 0 && autoFiltersApplied && ftsText) {
+    const autoDateFiltersApplied = analysis.extractedDateHints && !userSetDates
+      && (effectiveFilters.startDate !== undefined || effectiveFilters.endDate !== undefined);
+    if (results.length === 0 && (autoFiltersApplied || autoDateFiltersApplied) && ftsText) {
       const relaxed = { ...query.filters };
-      logger.debug('[HybridSearch] Zero results with auto-derived amount filters — retrying without');
+      logger.debug(
+        '[HybridSearch] Zero results with auto-derived filters — retrying without inferred date/amount constraints',
+      );
       results = await this.executeMode(db, mode, ftsText, embeddingJson, relaxed, limit, wFts, wVec);
     }
 

@@ -10,6 +10,7 @@
 
 import { getResponseCache } from './ResponseCache.js';
 import { markSearchIndexDirty } from './syncState.js';
+import { SearchIndex } from './SearchIndex.js';
 import type { CacheTag } from './types.js';
 import logger from '../../logger.js';
 
@@ -28,6 +29,7 @@ const WRITE_TOOL_TAGS: Record<string, CacheTag[]> = {
   // Transactions
   actual_transactions_create: ['transactions', 'search'],
   actual_transactions_update: ['transactions', 'search'],
+  actual_transactions_update_batch: ['transactions', 'search'],
   actual_transactions_delete: ['transactions', 'search'],
   actual_transactions_import: ['transactions', 'search'],
 
@@ -49,6 +51,7 @@ const WRITE_TOOL_TAGS: Record<string, CacheTag[]> = {
 
   // Rules
   actual_rules_create: ['rules'],
+  actual_rules_create_or_update: ['rules'],
   actual_rules_update: ['rules'],
   actual_rules_delete: ['rules'],
 
@@ -63,6 +66,31 @@ const WRITE_TOOL_TAGS: Record<string, CacheTag[]> = {
   // Bank sync
   actual_bank_sync: ['transactions', 'accounts', 'search'],
 };
+
+function resolveSearchDataDir(): string {
+  return process.env.SEARCH_INDEX_DIR
+    || process.env.MCP_BRIDGE_DATA_DIR
+    || './actual-data';
+}
+
+function bumpPersistedDirtyGeneration(): void {
+  let tempIndex: SearchIndex | null = null;
+  try {
+    tempIndex = new SearchIndex(resolveSearchDataDir());
+    tempIndex.open();
+    tempIndex.bumpDirtyGeneration();
+  } catch (err) {
+    logger.warn(
+      `[CacheInvalidator] Failed to persist dirty generation: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    try {
+      tempIndex?.close();
+    } catch {
+      // best-effort cleanup
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -82,6 +110,7 @@ export function invalidateAfterWrite(toolName: string): void {
   // Mark search index for re-sync on next query
   if (tags.includes('search') || tags.includes('transactions')) {
     markSearchIndexDirty();
+    bumpPersistedDirtyGeneration();
   }
 
   if (count > 0) {

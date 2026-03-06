@@ -298,7 +298,6 @@ export class SearchIndex {
     const changed = this.diffTransactions(db, transactions);
     if (changed.length === 0) {
       logger.info(`[SearchIndex] Incremental sync: 0/${transactions.length} changed — skipping re-index`);
-      this.recordSyncTimestamp(db);
       return 0;
     }
 
@@ -306,7 +305,6 @@ export class SearchIndex {
 
     const stats = await this.indexChangedBatches(db, changed);
     Q.optimizeFts(db);
-    this.recordSyncTimestamp(db);
 
     const elapsed = Date.now() - startMs;
     const hitRate = stats.cacheHits + stats.cacheMisses > 0
@@ -345,16 +343,39 @@ export class SearchIndex {
     if (cached?.embedding) {
       try {
         if (typeof cached.embedding === 'string') {
-          return { vec: JSON.parse(cached.embedding) as number[], hit: true };
+          const parsed = JSON.parse(cached.embedding) as number[];
+          if (Array.isArray(parsed) && parsed.length === EMBEDDING_DIMS) {
+            return { vec: parsed, hit: true };
+          }
+          logger.warn(
+            `[SearchIndex] Ignoring cached embedding with invalid dimensions: ` +
+            `${Array.isArray(parsed) ? parsed.length : 'unknown'} (expected ${EMBEDDING_DIMS})`,
+          );
+          return { vec: null, hit: false };
         }
         const vec = f32BlobToEmbedding(cached.embedding as Buffer | Uint8Array);
-        if (vec) return { vec, hit: true };
+        if (vec && vec.length === EMBEDDING_DIMS) return { vec, hit: true };
+        if (vec) {
+          logger.warn(
+            `[SearchIndex] Ignoring binary cached embedding with invalid dimensions: ` +
+            `${vec.length} (expected ${EMBEDDING_DIMS})`,
+          );
+          return { vec: null, hit: false };
+        }
       } catch {
         // Corrupted cache entry — treat as miss
       }
     }
 
     const vec = await this.emb.embed(text);
+    if (vec && vec.length !== EMBEDDING_DIMS) {
+      logger.error(
+        `[SearchIndex] Embedding dimension mismatch from provider: ` +
+        `${vec.length} (expected ${EMBEDDING_DIMS}); vector disabled for this row`,
+      );
+      return { vec: null, hit: false };
+    }
+
     if (vec) {
       const blob = embeddingToF32Blob(vec);
       if (blob) {
@@ -443,6 +464,39 @@ export class SearchIndex {
 
   private recordSyncTimestamp(db: DatabaseInstance): void {
     Q.setSyncTimestamp(db, new Date().toISOString());
+  }
+
+  getSyncVersions(): {
+    dirtyGeneration: number;
+    syncedGeneration: number;
+    lastSyncedAt: string | null;
+  } {
+    const db = this.requireDb();
+    let dirtyGeneration = Q.getSyncMetaInt(db, 'search_dirty_generation');
+    let syncedGeneration = Q.getSyncMetaInt(db, 'search_synced_generation');
+    const lastSyncedAt = Q.getSyncTimestamp(db);
+
+    // Backward compatibility for older indexes that only have last_synced_at.
+    if (dirtyGeneration === 0 && syncedGeneration === 0 && lastSyncedAt) {
+      dirtyGeneration = 1;
+      syncedGeneration = 1;
+    }
+
+    return { dirtyGeneration, syncedGeneration, lastSyncedAt };
+  }
+
+  bumpDirtyGeneration(): number {
+    const db = this.requireDb();
+    return Q.incrementSyncMetaInt(db, 'search_dirty_generation');
+  }
+
+  tryMarkSyncedGeneration(expectedDirtyGeneration: number): boolean {
+    const db = this.requireDb();
+    const currentDirty = Q.getSyncMetaInt(db, 'search_dirty_generation');
+    if (currentDirty !== expectedDirtyGeneration) return false;
+    Q.setSyncMetaInt(db, 'search_synced_generation', currentDirty);
+    this.recordSyncTimestamp(db);
+    return true;
   }
 
   /**

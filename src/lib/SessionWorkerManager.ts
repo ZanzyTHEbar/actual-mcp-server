@@ -8,6 +8,7 @@ import { ensureCallToolResult, toTextResult } from './toolResult.js';
 import { WriteCoordinator } from './WriteCoordinator.js';
 import { requestContext } from './requestContext.js';
 import { canAccessBudget } from '../auth/budget-acl.js';
+import { normalizeToolName } from './toolNameNormalization.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 type PendingRequest = {
@@ -38,10 +39,12 @@ export class SessionWorkerManager {
   private coordinator = new WriteCoordinator();
   private maxSessions: number;
   private baseDataDir: string;
+  private toolCallTimeoutMs: number;
 
-  constructor(opts?: { maxSessions?: number; baseDataDir?: string }) {
+  constructor(opts?: { maxSessions?: number; baseDataDir?: string; toolCallTimeoutMs?: number }) {
     this.maxSessions = opts?.maxSessions ?? parseInt(process.env.MAX_CONCURRENT_SESSIONS || String(DEFAULT_MAX_SESSIONS), 10);
     this.baseDataDir = opts?.baseDataDir || config.MCP_BRIDGE_DATA_DIR || './actual-data';
+    this.toolCallTimeoutMs = opts?.toolCallTimeoutMs ?? config.SESSION_TOOL_TIMEOUT_MS ?? 45_000;
   }
 
   canAcceptNewSession(): boolean {
@@ -71,12 +74,15 @@ export class SessionWorkerManager {
     const safeId = sanitizeSessionId(sessionId);
     const dataDir = path.join(this.baseDataDir, `session-${safeId}`);
     fs.mkdirSync(dataDir, { recursive: true });
+    const searchIndexDir = process.env.SEARCH_INDEX_DIR || path.join(this.baseDataDir, 'search-index');
+    fs.mkdirSync(searchIndexDir, { recursive: true });
 
     const workerUrl = new URL('../workers/actualSessionWorker.js', import.meta.url);
     const worker = new Worker(workerUrl, {
       workerData: {
         sessionId,
         dataDir,
+        searchIndexDir,
       },
     });
 
@@ -102,10 +108,21 @@ export class SessionWorkerManager {
 
     worker.on('error', (err) => {
       logger.error(`[Worker] Error for session ${sessionId}:`, err);
+      this.rejectPendingRequests(
+        sessionId,
+        pending,
+        `Worker errored for session ${sessionId}`,
+        err,
+      );
     });
 
     worker.on('exit', (code) => {
       logger.info(`[Worker] Session ${sessionId} exited with code ${code}`);
+      this.rejectPendingRequests(
+        sessionId,
+        pending,
+        `Worker exited for session ${sessionId} with code ${code}`,
+      );
       this.workers.delete(sessionId);
     });
   }
@@ -116,9 +133,44 @@ export class SessionWorkerManager {
     if (info) info.lastActivity = Date.now();
   }
 
+  private rejectPendingRequests(
+    sessionId: string,
+    pending: Map<string, PendingRequest>,
+    reason: string,
+    cause?: unknown,
+  ): void {
+    if (pending.size === 0) return;
+    const causeMsg = cause instanceof Error ? cause.message : (cause ? String(cause) : null);
+    const message = causeMsg ? `${reason}: ${causeMsg}` : reason;
+
+    for (const [requestId, req] of pending.entries()) {
+      try {
+        req.reject(new Error(`${message} (requestId=${requestId})`));
+      } catch {
+        // Best effort rejection for all pending requests
+      }
+    }
+    pending.clear();
+    logger.warn(`[Worker] Rejected pending requests for session ${sessionId}: ${message}`);
+  }
+
+  private broadcastSearchDirty(): void {
+    const budgetId = config.ACTUAL_BUDGET_SYNC_ID;
+    for (const [sessionId, info] of this.workers.entries()) {
+      try {
+        info.worker.postMessage({ type: 'markSearchDirty', budgetId });
+      } catch (err) {
+        logger.warn(
+          `[Worker] Failed to broadcast search dirty signal to session ${sessionId}: ${String(err)}`,
+        );
+      }
+    }
+  }
+
   async closeSession(sessionId: string): Promise<void> {
     const info = this.workers.get(sessionId);
     if (!info) return;
+    this.rejectPendingRequests(sessionId, info.pending, `Session ${sessionId} is closing`);
     try {
       info.worker.postMessage({ type: 'shutdown' });
     } catch {
@@ -141,6 +193,7 @@ export class SessionWorkerManager {
     const info = this.workers.get(sessionId);
     if (!info) throw new Error(`Session ${sessionId} not initialized`);
     info.lastActivity = Date.now();
+    const canonicalToolName = normalizeToolName(toolName);
 
     // Budget ACL enforcement: when identity exists, deny if user lacks budget access
     const identity = requestContext.getStore()?.identity;
@@ -155,19 +208,71 @@ export class SessionWorkerManager {
       }
     }
 
-    const isWrite = this.isWriteTool(toolName);
-    const keys = isWrite ? uniqueKeys(this.getWriteKeys(toolName, args)) : [];
+    const isWrite = this.isWriteTool(canonicalToolName);
+    const keys = isWrite ? uniqueKeys(this.getWriteKeys(canonicalToolName, args)) : [];
     const release = isWrite ? await this.coordinator.acquire(keys) : null;
 
     try {
       const requestId = randomUUID();
       const resultPromise = new Promise<unknown>((resolve, reject) => {
-        info.pending.set(requestId, { resolve, reject });
+        const timeout = setTimeout(() => {
+          if (!info.pending.has(requestId)) return;
+          info.pending.delete(requestId);
+          reject(new Error(
+            `Tool "${canonicalToolName}" timed out after ${this.toolCallTimeoutMs}ms`,
+          ));
+        }, this.toolCallTimeoutMs);
+
+        info.pending.set(requestId, {
+          resolve: (value) => {
+            clearTimeout(timeout);
+            resolve(value);
+          },
+          reject: (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          },
+        });
       });
 
-      info.worker.postMessage({ type: 'executeTool', requestId, toolName, args });
-      const result = await resultPromise;
-      return ensureCallToolResult(result);
+      try {
+        info.worker.postMessage({
+          type: 'executeTool',
+          requestId,
+          toolName: canonicalToolName,
+          args,
+        });
+      } catch (err) {
+        const pendingReq = info.pending.get(requestId);
+        if (pendingReq) {
+          info.pending.delete(requestId);
+          const sendErr = err instanceof Error ? err : new Error(String(err));
+          pendingReq.reject(sendErr);
+        }
+      }
+      try {
+        const result = await resultPromise;
+        const callResult = ensureCallToolResult(result);
+        if (isWrite && !callResult.isError) {
+          this.broadcastSearchDirty();
+        }
+        return callResult;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('timed out')) {
+          logger.warn(`[Worker] ${msg} (session=${sessionId})`);
+          return toTextResult(
+            {
+              message: msg,
+              sessionId,
+              toolName: canonicalToolName,
+              timeoutMs: this.toolCallTimeoutMs,
+            },
+            { isError: true },
+          );
+        }
+        throw err;
+      }
     } finally {
       if (release) release();
     }

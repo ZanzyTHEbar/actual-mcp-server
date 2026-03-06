@@ -11,6 +11,7 @@ import type { ToolDefinition } from '../../types/tool.d.js';
 import { getSearchRuntime } from '../lib/search/index.js';
 import { isSearchIndexSynced } from '../lib/search/syncState.js';
 import type { DatabaseInstance } from '../lib/search/types.js';
+import { toErrorResult } from '../lib/toolResult.js';
 import logger from '../logger.js';
 
 interface RefRow {
@@ -69,14 +70,13 @@ const tool: ToolDefinition = {
       db = index.getDb();
     } catch (err) {
       logger.error('[SearchSimilar] Failed to get search runtime:', err);
-      return { error: 'Search engine not available.', results: [] };
+      return toErrorResult({ message: 'Search engine not available.' });
     }
 
     if (!isSearchIndexSynced()) {
-      return {
-        error: 'Search index not yet synced. Run actual_hybrid_search first to populate the index.',
-        results: [],
-      };
+      return toErrorResult({
+        message: 'Search index not yet synced. Run actual_hybrid_search first to populate the index.',
+      });
     }
 
     const refRow = db.prepare(
@@ -84,11 +84,11 @@ const tool: ToolDefinition = {
     ).get(input.transactionId) as RefRow | undefined;
 
     if (!refRow) {
-      return { error: `Transaction "${input.transactionId}" not found in search index.`, results: [] };
+      return toErrorResult({ message: `Transaction "${input.transactionId}" not found in search index.` });
     }
 
     if (!refRow.embedding) {
-      return { error: `Transaction "${input.transactionId}" has no embedding.`, results: [] };
+      return toErrorResult({ message: `Transaction "${input.transactionId}" has no embedding.` });
     }
 
     const excludePayeeClause = input.excludeSamePayee ? 'AND t.payee_name != ?' : '';
@@ -140,10 +140,9 @@ const tool: ToolDefinition = {
       };
     } catch (err) {
       logger.error('[SearchSimilar] Query failed:', err);
-      return {
-        error: `Vector similarity query failed: ${err instanceof Error ? err.message : err}`,
-        results: [],
-      };
+      return toErrorResult({
+        message: `Vector similarity query failed: ${err instanceof Error ? err.message : err}`,
+      });
     }
   }),
 };

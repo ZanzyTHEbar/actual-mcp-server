@@ -26,6 +26,7 @@ import assert from 'node:assert/strict';
       'actual_accounts_delete',
       'actual_transactions_create',
       'actual_transactions_update',
+      'actual_transactions_update_batch',
       'actual_transactions_delete',
       'actual_transactions_import',
       'actual_categories_create',
@@ -33,6 +34,7 @@ import assert from 'node:assert/strict';
       'actual_payees_create',
       'actual_payees_merge',
       'actual_rules_create',
+      'actual_rules_create_or_update',
       'actual_budgets_setAmount',
       'actual_bank_sync',
     ];
@@ -110,7 +112,45 @@ import assert from 'node:assert/strict';
   }
 
   // ---------------------------------------------------------------------------
-  // Test 5: invalidateAfterWrite — no-op for read tools
+  // Test 5: invalidateAfterWrite — transactions_update_batch busts search+txn
+  // ---------------------------------------------------------------------------
+  {
+    const cache = getResponseCache();
+    cache.clear();
+
+    cache.set('search:q1', { results: [] }, { ttlMs: 60_000, tags: ['search'] });
+    cache.set('txn:all', [], { ttlMs: 60_000, tags: ['transactions'] });
+    cache.set('ref:accounts', [{ id: 'a1' }], { ttlMs: 60_000, tags: ['accounts'] });
+
+    invalidateAfterWrite('actual_transactions_update_batch');
+
+    assert.equal(cache.peek('search:q1'), undefined, 'Search should be busted');
+    assert.equal(cache.peek('txn:all'), undefined, 'Transactions should be busted');
+    assert.notEqual(cache.peek('ref:accounts'), undefined, 'Accounts should survive');
+
+    console.log('  ✓ invalidateAfterWrite busts search + transactions for transactions_update_batch');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test 6: invalidateAfterWrite — rules_create_or_update busts rules cache
+  // ---------------------------------------------------------------------------
+  {
+    const cache = getResponseCache();
+    cache.clear();
+
+    cache.set('rules:all', [{ id: 'r1' }], { ttlMs: 60_000, tags: ['rules'] });
+    cache.set('ref:accounts', [{ id: 'a1' }], { ttlMs: 60_000, tags: ['accounts'] });
+
+    invalidateAfterWrite('actual_rules_create_or_update');
+
+    assert.equal(cache.peek('rules:all'), undefined, 'Rules should be busted');
+    assert.notEqual(cache.peek('ref:accounts'), undefined, 'Accounts should survive');
+
+    console.log('  ✓ invalidateAfterWrite busts rules for rules_create_or_update');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test 7: invalidateAfterWrite — no-op for read tools
   // ---------------------------------------------------------------------------
   {
     const cache = getResponseCache();
@@ -128,7 +168,7 @@ import assert from 'node:assert/strict';
   }
 
   // ---------------------------------------------------------------------------
-  // Test 6: invalidateAfterWrite — bank_sync busts transactions + accounts + search
+  // Test 8: invalidateAfterWrite — bank_sync busts transactions + accounts + search
   // ---------------------------------------------------------------------------
   {
     const cache = getResponseCache();

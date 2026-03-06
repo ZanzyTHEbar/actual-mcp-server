@@ -4,6 +4,7 @@ import type { ToolDefinition } from '../../types/tool.d.js';
 import actualToolsManager from '../actualToolsManager.js';
 import { sessionWorkerManager } from '../lib/SessionWorkerManager.js';
 import { requestContext } from '../lib/requestContext.js';
+import { normalizeToolName } from '../lib/toolNameNormalization.js';
 
 const InputSchema = z.object({
   toolName: z.string().min(1).describe(
@@ -40,15 +41,19 @@ Example:
   call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     const input = InputSchema.parse(args || {});
     const { toolName, arguments: toolArgs } = input;
+    const normalizedToolName = normalizeToolName(toolName);
+    if (normalizedToolName === 'actual_tool_call') {
+      throw new Error('actual_tool_call cannot invoke itself');
+    }
 
     // Verify the tool exists
-    const targetTool = actualToolsManager.getTool(toolName);
+    const targetTool = actualToolsManager.getTool(normalizedToolName);
     if (!targetTool) {
       const allNames = actualToolsManager.getToolNames();
       // Find close matches for helpful suggestions
       const suggestions = allNames
         .filter((n) => {
-          const parts = toolName.toLowerCase().split('_');
+          const parts = normalizedToolName.toLowerCase().split('_');
           return parts.some((p) => p.length > 2 && n.toLowerCase().includes(p));
         })
         .slice(0, 5);
@@ -65,15 +70,16 @@ Example:
     // (e.g., during testing or non-HTTP transports).
     const ctx = requestContext.getStore();
     const sessionId = ctx?.sessionId;
+    const executesGlobally = normalizedToolName === 'actual_session_list' || normalizedToolName === 'actual_session_close';
 
-    if (sessionId) {
+    if (sessionId && !executesGlobally) {
       // Route through session worker manager for write coordination
-      const result = await sessionWorkerManager.executeTool(sessionId, toolName, toolArgs);
+      const result = await sessionWorkerManager.executeTool(sessionId, normalizedToolName, toolArgs);
       return result;
     }
 
-    // Fallback: direct dispatch (no write coordination)
-    const result = await actualToolsManager.callTool(toolName, toolArgs);
+    // Fallback/global execution (used for session management and non-session transports)
+    const result = await actualToolsManager.callTool(normalizedToolName, toolArgs);
     return result;
   }),
 };

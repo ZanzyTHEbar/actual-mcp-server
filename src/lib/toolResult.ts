@@ -38,6 +38,10 @@ export function toTextResult(value: unknown, opts?: { isError?: boolean }): Call
   return { content };
 }
 
+export function toErrorResult(value: unknown): CallToolResult {
+  return toTextResult(value, { isError: true });
+}
+
 export function ensureCallToolResult(value: unknown): CallToolResult {
   if (isCallToolResult(value)) return value;
   return toTextResult(value);

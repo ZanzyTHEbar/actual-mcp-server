@@ -36,7 +36,22 @@ export interface QueryAnalysis {
 // ---------------------------------------------------------------------------
 
 const AMOUNT_PATTERN = /\$\s*[\d,.]+|\d+\s*(dollars?|bucks|cents)|\b(over|under|above|below|more than|less than|between)\s+\$?\d/i;
-const DATE_PATTERN = /\b(january|february|march|april|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b|\b\d{4}[-/]\d{2}([-/]\d{2})?\b|\b(last|this|next)\s+(week|month|year|quarter)\b|\b(today|yesterday|recent|lately)\b/i;
+const DATE_PATTERN = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b|\b\d{4}[-/]\d{2}([-/]\d{2})?\b|\b(last|this|next)\s+(week|month|year|quarter)\b|\b(today|yesterday|recent|lately)\b/i;
+
+const MONTH_TO_INDEX: Record<string, number> = {
+  january: 0, jan: 0,
+  february: 1, feb: 1,
+  march: 2, mar: 2,
+  april: 3, apr: 3,
+  may: 4,
+  june: 5, jun: 5,
+  july: 6, jul: 6,
+  august: 7, aug: 7,
+  september: 8, sep: 8,
+  october: 9, oct: 9,
+  november: 10, nov: 10,
+  december: 11, dec: 11,
+};
 
 // Matches: "Starbucks", "COSTCO WHOLESALE", "ATT*BILL PAYMENT", "Square Cash"
 // Handles: Title Case, ALL CAPS, mixed with symbols/numbers
@@ -166,13 +181,110 @@ function extractAmounts(text: string): { min?: number; max?: number } {
 
 function extractDateHints(text: string): string[] {
   const hints: string[] = [];
-  const months = text.match(/\b(january|february|march|april|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b/gi);
+  const months = text.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b/gi);
   if (months) hints.push(...months.map((m) => m.toLowerCase()));
   const relative = text.match(/\b(last|this|next)\s+(week|month|year|quarter)\b/gi);
   if (relative) hints.push(...relative.map((r) => r.toLowerCase()));
+  const relativeDay = text.match(/\b(today|yesterday|recent|lately)\b/gi);
+  if (relativeDay) hints.push(...relativeDay.map((r) => r.toLowerCase()));
   const iso = text.match(/\b\d{4}[-/]\d{2}([-/]\d{2})?\b/g);
   if (iso) hints.push(...iso);
   return hints;
+}
+
+function formatIsoDateUTC(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function monthRangeUtc(year: number, monthIndex: number): { startDate: string; endDate: string } {
+  const start = new Date(Date.UTC(year, monthIndex, 1));
+  const end = new Date(Date.UTC(year, monthIndex + 1, 0));
+  return { startDate: formatIsoDateUTC(start), endDate: formatIsoDateUTC(end) };
+}
+
+export function deriveDateRangeFromHints(
+  hints: string[] | undefined,
+  now = new Date(),
+): { startDate?: string; endDate?: string } | null {
+  if (!hints || hints.length === 0) return null;
+
+  const normalized = hints.map((h) => h.toLowerCase().trim());
+  const nowUtc = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  ));
+
+  const isoDay = normalized.find((h) => /^\d{4}[-/]\d{2}[-/]\d{2}$/.test(h));
+  if (isoDay) {
+    const day = isoDay.replace(/\//g, '-');
+    return { startDate: day, endDate: day };
+  }
+
+  const isoMonth = normalized.find((h) => /^\d{4}[-/]\d{2}$/.test(h));
+  if (isoMonth) {
+    const [year, month] = isoMonth.replace(/\//g, '-').split('-').map((n) => Number.parseInt(n, 10));
+    if (Number.isFinite(year) && Number.isFinite(month) && month >= 1 && month <= 12) {
+      return monthRangeUtc(year, month - 1);
+    }
+  }
+
+  if (normalized.includes('today')) {
+    const day = formatIsoDateUTC(nowUtc);
+    return { startDate: day, endDate: day };
+  }
+  if (normalized.includes('yesterday')) {
+    const day = new Date(nowUtc);
+    day.setUTCDate(day.getUTCDate() - 1);
+    const iso = formatIsoDateUTC(day);
+    return { startDate: iso, endDate: iso };
+  }
+  if (normalized.includes('recent') || normalized.includes('lately')) {
+    const start = new Date(nowUtc);
+    start.setUTCDate(start.getUTCDate() - 30);
+    return { startDate: formatIsoDateUTC(start), endDate: formatIsoDateUTC(nowUtc) };
+  }
+
+  const relativeRange = normalized.find((h) => /^(last|this|next)\s+(week|month|year|quarter)$/.test(h));
+  if (relativeRange) {
+    const [, direction, unit] = relativeRange.match(/^(last|this|next)\s+(week|month|year|quarter)$/)!;
+    const offset = direction === 'last' ? -1 : direction === 'next' ? 1 : 0;
+
+    if (unit === 'week') {
+      const dayOfWeek = nowUtc.getUTCDay() || 7; // Sunday=>7
+      const start = new Date(nowUtc);
+      start.setUTCDate(start.getUTCDate() - (dayOfWeek - 1) + (offset * 7));
+      const end = new Date(start);
+      end.setUTCDate(end.getUTCDate() + 6);
+      return { startDate: formatIsoDateUTC(start), endDate: formatIsoDateUTC(end) };
+    }
+
+    if (unit === 'month') {
+      return monthRangeUtc(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth() + offset);
+    }
+
+    if (unit === 'year') {
+      const year = nowUtc.getUTCFullYear() + offset;
+      return {
+        startDate: formatIsoDateUTC(new Date(Date.UTC(year, 0, 1))),
+        endDate: formatIsoDateUTC(new Date(Date.UTC(year, 11, 31))),
+      };
+    }
+
+    // quarter
+    const currentQuarter = Math.floor(nowUtc.getUTCMonth() / 3);
+    const quarterStartMonth = (currentQuarter + offset) * 3;
+    const base = new Date(Date.UTC(nowUtc.getUTCFullYear(), quarterStartMonth, 1));
+    const end = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 3, 0));
+    return { startDate: formatIsoDateUTC(base), endDate: formatIsoDateUTC(end) };
+  }
+
+  const monthHint = normalized.find((h) => MONTH_TO_INDEX[h] !== undefined);
+  if (monthHint) {
+    return monthRangeUtc(nowUtc.getUTCFullYear(), MONTH_TO_INDEX[monthHint]);
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +299,8 @@ const AMOUNT_STRIP_PATTERNS = [
 
 const DATE_STRIP_PATTERNS = [
   /\b(last|this|next)\s+(week|month|year|quarter)\b/gi,
+  /\b(today|yesterday|recent|lately)\b/gi,
+  /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b/gi,
   /\b\d{4}[-/]\d{2}([-/]\d{2})?\b/g,
 ];
 

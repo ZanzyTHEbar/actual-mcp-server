@@ -12,7 +12,7 @@ import logger, { sanitizeForLog, sanitizeError } from '../logger.js';
 import { getLocalIp } from '../utils.js';
 import actualToolsManager from '../actualToolsManager.js';
 import { sessionWorkerManager } from '../lib/SessionWorkerManager.js';
-import { toTextResult } from '../lib/toolResult.js';
+import { ensureCallToolResult, toTextResult } from '../lib/toolResult.js';
 import observability from '../observability.js';
 import config from '../config.js';
 import { requestContext } from '../lib/requestContext.js';
@@ -195,6 +195,11 @@ export async function startHttpServer(
       if (name === 'actual_session_list') {
         const stats = sessionWorkerManager.getStats();
         return toTextResult(stats);
+      }
+
+      if (name === 'actual_tool_call') {
+        const result = await actualToolsManager.callTool(name, args ?? {});
+        return ensureCallToolResult(result);
       }
 
       if (name === 'actual_session_close') {

@@ -10,7 +10,7 @@ import actualToolsManager from '../actualToolsManager.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import config from '../config.js';
 import { sessionWorkerManager } from '../lib/SessionWorkerManager.js';
-import { toTextResult } from '../lib/toolResult.js';
+import { ensureCallToolResult, toTextResult } from '../lib/toolResult.js';
 import type { AuthProvider, AuthIdentity } from '../auth/types.js';
 import { createAuthMiddleware, getIdentityFromLocals } from '../auth/auth-middleware.js';
 import { requestContext } from '../lib/requestContext.js';
@@ -141,6 +141,10 @@ export async function startSseServer(
         if (name === 'actual_session_list') {
           const stats = sessionWorkerManager.getStats();
           return toTextResult(stats);
+        }
+        if (name === 'actual_tool_call') {
+          const result = await actualToolsManager.callTool(name, args || {});
+          return ensureCallToolResult(result);
         }
         if (name === 'actual_session_close') {
           const input = (args || {}) as { sessionId?: string };
