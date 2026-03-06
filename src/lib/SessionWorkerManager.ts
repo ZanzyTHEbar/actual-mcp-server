@@ -7,13 +7,27 @@ import config from '../config.js';
 import { ensureCallToolResult, toTextResult } from './toolResult.js';
 import { WriteCoordinator } from './WriteCoordinator.js';
 import { requestContext } from './requestContext.js';
-import { canAccessBudget } from '../auth/budget-acl.js';
+import { canAccessBudget, getAllowedBudgets } from '../auth/budget-acl.js';
 import { normalizeToolName } from './toolNameNormalization.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import {
+  listBudgetHandles,
+  parseBudgetRegistry,
+  resolveBudgetByName,
+  toBudgetHandle,
+  type BudgetConfig,
+  type BudgetHandle,
+} from './budget-registry.js';
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+};
+
+type IdentityLike = {
+  userId: string;
+  email?: string;
+  groups?: string[];
 };
 
 type WorkerInfo = {
@@ -21,6 +35,7 @@ type WorkerInfo = {
   pending: Map<string, PendingRequest>;
   lastActivity: number;
   dataDir: string;
+  activeBudget: BudgetHandle;
 };
 
 const DEFAULT_MAX_SESSIONS = 5;
@@ -40,11 +55,20 @@ export class SessionWorkerManager {
   private maxSessions: number;
   private baseDataDir: string;
   private toolCallTimeoutMs: number;
+  private budgetRegistry: Map<string, BudgetConfig>;
+  private searchBaseDir: string;
 
   constructor(opts?: { maxSessions?: number; baseDataDir?: string; toolCallTimeoutMs?: number }) {
     this.maxSessions = opts?.maxSessions ?? parseInt(process.env.MAX_CONCURRENT_SESSIONS || String(DEFAULT_MAX_SESSIONS), 10);
     this.baseDataDir = opts?.baseDataDir || config.MCP_BRIDGE_DATA_DIR || './actual-data';
     this.toolCallTimeoutMs = opts?.toolCallTimeoutMs ?? config.SESSION_TOOL_TIMEOUT_MS ?? 45_000;
+    this.searchBaseDir = process.env.SEARCH_INDEX_DIR || path.join(this.baseDataDir, 'search-index');
+    this.budgetRegistry = parseBudgetRegistry(process.env, {
+      serverUrl: config.ACTUAL_SERVER_URL,
+      password: config.ACTUAL_PASSWORD || '',
+      syncId: config.ACTUAL_BUDGET_SYNC_ID,
+      encryptionPassword: config.ACTUAL_BUDGET_PASSWORD,
+    });
   }
 
   canAcceptNewSession(): boolean {
@@ -61,11 +85,117 @@ export class SessionWorkerManager {
         sessionId,
         lastActivity: new Date(info.lastActivity),
         idleMinutes: Math.floor((now - info.lastActivity) / 60000),
+        activeBudget: {
+          name: info.activeBudget.name,
+          syncId: info.activeBudget.syncId,
+          budgetKey: info.activeBudget.budgetKey,
+        },
       })),
     };
   }
 
-  async createSession(sessionId: string): Promise<void> {
+  getBudgetRegistry(): BudgetHandle[] {
+    return listBudgetHandles(this.budgetRegistry);
+  }
+
+  getSessionBudget(sessionId: string): BudgetHandle {
+    const info = this.workers.get(sessionId);
+    if (!info) {
+      throw new Error(`Session ${sessionId} not initialized`);
+    }
+    return info.activeBudget;
+  }
+
+  private pickInitialBudget(identity?: IdentityLike): BudgetHandle {
+    const budgets = this.getBudgetRegistry();
+    if (!identity) {
+      return budgets[0];
+    }
+
+    const allowed = getAllowedBudgets(identity);
+    if (allowed === null || allowed.includes('*')) {
+      return budgets[0];
+    }
+
+    const allowedSet = new Set(allowed);
+    const match = budgets.find((budget) => allowedSet.has(budget.syncId));
+    if (!match) {
+      throw new Error(`Forbidden: user ${identity.userId} has no accessible configured budgets`);
+    }
+    return match;
+  }
+
+  listAvailableBudgets(identity?: IdentityLike, sessionId?: string) {
+    const budgets = this.getBudgetRegistry()
+      .filter((budget) => !identity || canAccessBudget(identity, budget.syncId))
+      .map((budget) => ({
+        name: budget.name,
+        syncId: budget.syncId,
+        serverUrl: budget.serverUrl,
+        usesEncryption: Boolean(budget.encryptionPassword),
+        budgetKey: budget.budgetKey,
+        active: sessionId ? this.workers.get(sessionId)?.activeBudget.budgetKey === budget.budgetKey : false,
+      }));
+    return budgets;
+  }
+
+  getBudgetListResult(identity?: IdentityLike, sessionId?: string) {
+    const budgets = this.listAvailableBudgets(identity, sessionId);
+    return {
+      budgets,
+      count: budgets.length,
+      hint: 'Pass a budget name to actual_budgets_switch to change the active budget for this session.',
+    };
+  }
+
+  switchSessionBudget(
+    sessionId: string,
+    budgetName: string,
+    identity?: IdentityLike,
+  ): BudgetHandle {
+    const info = this.workers.get(sessionId);
+    if (!info) {
+      throw new Error(`Session ${sessionId} not initialized`);
+    }
+
+    const { match, matches } = resolveBudgetByName(this.budgetRegistry, budgetName);
+    if (!match) {
+      if (matches.length > 1) {
+        throw new Error(
+          `Multiple budgets match "${budgetName}". Matching budgets: ${matches.map((budget) => budget.name).join(', ')}`,
+        );
+      }
+      throw new Error(`No configured budget matched "${budgetName}"`);
+    }
+
+    if (identity && !canAccessBudget(identity, match.syncId)) {
+      throw new Error(`Forbidden: you do not have access to budget "${match.name}"`);
+    }
+
+    info.activeBudget = match;
+    logger.info(
+      `[BudgetSwitch] Session ${sessionId} switched to "${match.name}" (${match.syncId}) on ${match.serverUrl}`,
+    );
+    return match;
+  }
+
+  getBudgetSwitchResult(
+    sessionId: string,
+    budgetName: string,
+    identity?: IdentityLike,
+  ) {
+    const budget = this.switchSessionBudget(sessionId, budgetName, identity);
+    return {
+      success: true,
+      budgetName: budget.name,
+      budgetId: budget.syncId,
+      budgetKey: budget.budgetKey,
+      serverUrl: budget.serverUrl,
+      message: `Switched to budget "${budget.name}" for session ${sessionId}`,
+    };
+  }
+
+  async createSession(sessionId: string, identity?: IdentityLike): Promise<void> {
     if (this.workers.has(sessionId)) return;
     if (!this.canAcceptNewSession()) {
       throw new Error(`Max concurrent sessions (${this.maxSessions}) reached`);
@@ -74,20 +204,27 @@ export class SessionWorkerManager {
     const safeId = sanitizeSessionId(sessionId);
     const dataDir = path.join(this.baseDataDir, `session-${safeId}`);
     fs.mkdirSync(dataDir, { recursive: true });
-    const searchIndexDir = process.env.SEARCH_INDEX_DIR || path.join(this.baseDataDir, 'search-index');
-    fs.mkdirSync(searchIndexDir, { recursive: true });
+    fs.mkdirSync(this.searchBaseDir, { recursive: true });
+    const defaultBudget = this.pickInitialBudget(identity);
 
     const workerUrl = new URL('../workers/actualSessionWorker.js', import.meta.url);
     const worker = new Worker(workerUrl, {
       workerData: {
         sessionId,
         dataDir,
-        searchIndexDir,
+        searchBaseDir: this.searchBaseDir,
+        initialBudget: defaultBudget,
       },
     });
 
     const pending = new Map<string, PendingRequest>();
-    const info: WorkerInfo = { worker, pending, lastActivity: Date.now(), dataDir };
+    const info: WorkerInfo = {
+      worker,
+      pending,
+      lastActivity: Date.now(),
+      dataDir,
+      activeBudget: defaultBudget,
+    };
     this.workers.set(sessionId, info);
 
     worker.on('message', (message: any) => {
@@ -154,11 +291,12 @@ export class SessionWorkerManager {
     logger.warn(`[Worker] Rejected pending requests for session ${sessionId}: ${message}`);
   }
 
-  private broadcastSearchDirty(): void {
-    const budgetId = config.ACTUAL_BUDGET_SYNC_ID;
+  private broadcastSearchDirty(budget: BudgetHandle, originSessionId?: string): void {
     for (const [sessionId, info] of this.workers.entries()) {
+      if (info.activeBudget.budgetKey !== budget.budgetKey) continue;
+      if (originSessionId && sessionId === originSessionId) continue;
       try {
-        info.worker.postMessage({ type: 'markSearchDirty', budgetId });
+        info.worker.postMessage({ type: 'markSearchDirty', budgetKey: budget.budgetKey });
       } catch (err) {
         logger.warn(
           `[Worker] Failed to broadcast search dirty signal to session ${sessionId}: ${String(err)}`,
@@ -194,11 +332,36 @@ export class SessionWorkerManager {
     if (!info) throw new Error(`Session ${sessionId} not initialized`);
     info.lastActivity = Date.now();
     const canonicalToolName = normalizeToolName(toolName);
+    const identity = requestContext.getStore()?.identity;
+    const requestBudget = info.activeBudget;
+
+    if (canonicalToolName === 'actual_budgets_list_available') {
+      return toTextResult(this.getBudgetListResult(identity, sessionId));
+    }
+
+    if (canonicalToolName === 'actual_budgets_switch') {
+      const budgetName = typeof (args as Record<string, unknown> | undefined)?.budgetName === 'string'
+        ? (args as Record<string, unknown>).budgetName as string
+        : '';
+      if (!budgetName) {
+        return toTextResult(
+          { message: 'budgetName is required' },
+          { isError: true },
+        );
+      }
+      try {
+        return toTextResult(this.getBudgetSwitchResult(sessionId, budgetName, identity));
+      } catch (err) {
+        return toTextResult(
+          { message: err instanceof Error ? err.message : String(err) },
+          { isError: true },
+        );
+      }
+    }
 
     // Budget ACL enforcement: when identity exists, deny if user lacks budget access
-    const identity = requestContext.getStore()?.identity;
     if (identity) {
-      const budgetSyncId = config.ACTUAL_BUDGET_SYNC_ID;
+      const budgetSyncId = requestBudget.syncId;
       if (!canAccessBudget(identity, budgetSyncId)) {
         logger.warn(`[ACL] Access denied: user=${identity.userId} budget=${budgetSyncId}`);
         return toTextResult(
@@ -209,7 +372,7 @@ export class SessionWorkerManager {
     }
 
     const isWrite = this.isWriteTool(canonicalToolName);
-    const keys = isWrite ? uniqueKeys(this.getWriteKeys(canonicalToolName, args)) : [];
+    const keys = isWrite ? uniqueKeys(this.getWriteKeys(requestBudget, canonicalToolName, args)) : [];
     const release = isWrite ? await this.coordinator.acquire(keys) : null;
 
     try {
@@ -241,6 +404,7 @@ export class SessionWorkerManager {
           requestId,
           toolName: canonicalToolName,
           args,
+          budget: requestBudget,
         });
       } catch (err) {
         const pendingReq = info.pending.get(requestId);
@@ -254,7 +418,7 @@ export class SessionWorkerManager {
         const result = await resultPromise;
         const callResult = ensureCallToolResult(result);
         if (isWrite && !callResult.isError) {
-          this.broadcastSearchDirty();
+          this.broadcastSearchDirty(requestBudget, sessionId);
         }
         return callResult;
       } catch (err) {
@@ -282,12 +446,13 @@ export class SessionWorkerManager {
     return WRITE_TOOLS.has(toolName);
   }
 
-  private getWriteKeys(toolName: string, args: unknown): string[] {
+  private getWriteKeys(budget: BudgetHandle, toolName: string, args: unknown): string[] {
     const a = (args || {}) as Record<string, unknown>;
     const keys: string[] = [];
+    const budgetPrefix = `budget:${budget.budgetKey}`;
 
     const add = (prefix: string, value?: unknown) => {
-      if (typeof value === 'string' && value.length > 0) keys.push(`${prefix}:${value}`);
+      if (typeof value === 'string' && value.length > 0) keys.push(`${budgetPrefix}:${prefix}:${value}`);
     };
 
     if (toolName === 'actual_budget_updates_batch') {
@@ -296,66 +461,66 @@ export class SessionWorkerManager {
         const catId = (op as Record<string, unknown>)?.categoryId;
         add('category', catId);
       }
-      if (keys.length === 0) keys.push('budget:batch');
+      if (keys.length === 0) keys.push(`${budgetPrefix}:budget:batch`);
       return keys;
     }
 
     if (toolName === 'actual_transactions_create' || toolName === 'actual_transactions_import') {
       add('account', a.accountId || a.account);
-      return keys.length ? keys : ['transactions:create'];
+      return keys.length ? keys : [`${budgetPrefix}:transactions:create`];
     }
     if (toolName === 'actual_transactions_update' || toolName === 'actual_transactions_delete') {
       add('transaction', a.id);
-      return keys.length ? keys : ['transactions:update'];
+      return keys.length ? keys : [`${budgetPrefix}:transactions:update`];
     }
     if (toolName === 'actual_transactions_update_batch') {
       const updates = Array.isArray(a.updates) ? a.updates : [];
       for (const u of updates) {
         add('transaction', (u as Record<string, unknown>)?.id);
       }
-      return keys.length ? keys : ['transactions:batch_update'];
+      return keys.length ? keys : [`${budgetPrefix}:transactions:batch_update`];
     }
 
-    if (toolName === 'actual_accounts_create') return ['account:create'];
+    if (toolName === 'actual_accounts_create') return [`${budgetPrefix}:account:create`];
     if (toolName.startsWith('actual_accounts_')) {
       add('account', a.id);
-      return keys.length ? keys : ['account:update'];
+      return keys.length ? keys : [`${budgetPrefix}:account:update`];
     }
 
     if (toolName.startsWith('actual_categories_')) {
       add('category', a.id || a.categoryId);
       add('category_group', a.group_id || a.groupId);
-      return keys.length ? keys : ['category:update'];
+      return keys.length ? keys : [`${budgetPrefix}:category:update`];
     }
     if (toolName.startsWith('actual_category_groups_')) {
       add('category_group', a.id);
-      return keys.length ? keys : ['category_group:update'];
+      return keys.length ? keys : [`${budgetPrefix}:category_group:update`];
     }
 
     if (toolName.startsWith('actual_payees_')) {
       add('payee', a.id || a.targetId);
       const mergeIds = Array.isArray(a.mergeIds) ? a.mergeIds : [];
       for (const id of mergeIds) add('payee', id);
-      return keys.length ? keys : ['payee:update'];
+      return keys.length ? keys : [`${budgetPrefix}:payee:update`];
     }
 
     if (toolName.startsWith('actual_rules_')) {
       add('rule', a.id);
-      return keys.length ? keys : ['rule:update'];
+      return keys.length ? keys : [`${budgetPrefix}:rule:update`];
     }
 
     if (toolName.startsWith('actual_budgets_')) {
       add('category', a.categoryId || a.fromCategoryId);
       add('category', a.toCategoryId);
-      return keys.length ? keys : ['budget:update'];
+      return keys.length ? keys : [`${budgetPrefix}:budget:update`];
     }
 
     if (toolName === 'actual_bank_sync') {
       add('account', a.accountId);
-      return keys.length ? keys : ['bank_sync:all'];
+      return keys.length ? keys : [`${budgetPrefix}:bank_sync:all`];
     }
 
-    return ['write:unknown'];
+    return [`${budgetPrefix}:write:unknown`];
   }
 }
 

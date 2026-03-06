@@ -16,6 +16,7 @@ import {
 } from './queryAnalyzer.js';
 import { recordSearchQuery } from '../../observability.js';
 import logger from '../../logger.js';
+import { budgetCacheKey } from '../budgetContext.js';
 import type {
   DatabaseInstance,
   HybridSearchQuery,
@@ -123,7 +124,7 @@ export class HybridSearchEngine {
 
     // Check cache first
     const cache = getResponseCache();
-    const cacheKey = `search:${JSON.stringify(query)}:v${cache.version}`;
+    const cacheKey = budgetCacheKey(`search:${JSON.stringify(query)}:v${cache.version}`);
     const cached = cache.peek<SearchResponse>(cacheKey);
     if (cached) {
       return cached;

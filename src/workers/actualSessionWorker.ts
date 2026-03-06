@@ -4,21 +4,24 @@ import actualToolsManager from '../actualToolsManager.js';
 import { ensureCallToolResult } from '../lib/toolResult.js';
 import { markSearchIndexDirty } from '../lib/search/syncState.js';
 import { getSearchIndex } from '../lib/search/searchRuntime.js';
+import { withBudgetContext } from '../lib/budgetContext.js';
+import type { BudgetHandle } from '../lib/budget-registry.js';
 
 type WorkerMessage =
-  | { type: 'executeTool'; requestId: string; toolName: string; args: unknown }
-  | { type: 'markSearchDirty'; budgetId?: string }
+  | { type: 'executeTool'; requestId: string; toolName: string; args: unknown; budget: BudgetHandle }
+  | { type: 'markSearchDirty'; budgetKey?: string }
   | { type: 'shutdown' };
 
 const sessionId = workerData?.sessionId as string | undefined;
 const dataDir = workerData?.dataDir as string | undefined;
-const searchIndexDir = workerData?.searchIndexDir as string | undefined;
+const searchBaseDir = workerData?.searchBaseDir as string | undefined;
+const initialBudget = workerData?.initialBudget as BudgetHandle | undefined;
 
 if (dataDir) {
   process.env.MCP_BRIDGE_DATA_DIR = dataDir;
 }
-if (searchIndexDir) {
-  process.env.SEARCH_INDEX_DIR = searchIndexDir;
+if (searchBaseDir) {
+  process.env.SEARCH_INDEX_DIR = searchBaseDir;
 }
 process.env.USE_CONNECTION_POOL = 'false';
 
@@ -45,8 +48,8 @@ parentPort?.on('message', async (message: WorkerMessage) => {
 
   if (message.type === 'markSearchDirty') {
     try {
-      markSearchIndexDirty(message.budgetId);
-      const index = getSearchIndex();
+      markSearchIndexDirty(message.budgetKey);
+      const index = message.budgetKey ? getSearchIndex(message.budgetKey) : getSearchIndex();
       if (index) {
         index.bumpDirtyGeneration();
       }
@@ -59,10 +62,16 @@ parentPort?.on('message', async (message: WorkerMessage) => {
   }
 
   if (message.type === 'executeTool') {
-    const { requestId, toolName, args } = message;
+    const { requestId, toolName, args, budget } = message;
     try {
       await ensureInitialized();
-      const result = await actualToolsManager.callTool(toolName, args);
+      const effectiveBudget = budget || initialBudget;
+      if (!effectiveBudget) {
+        throw new Error('Budget context is missing for worker execution');
+      }
+      const result = await withBudgetContext(effectiveBudget, () =>
+        actualToolsManager.callTool(toolName, args)
+      );
       const callResult = ensureCallToolResult(result);
       parentPort?.postMessage({ type: 'toolResult', requestId, result: callResult });
     } catch (err) {

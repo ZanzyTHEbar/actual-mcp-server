@@ -13,6 +13,7 @@ import { markSearchIndexDirty } from './syncState.js';
 import { SearchIndex } from './SearchIndex.js';
 import type { CacheTag } from './types.js';
 import logger from '../../logger.js';
+import { resolveBudgetSearchIndexDir } from '../budgetContext.js';
 
 // ---------------------------------------------------------------------------
 // Tool → tag mapping
@@ -49,6 +50,11 @@ const WRITE_TOOL_TAGS: Record<string, CacheTag[]> = {
   actual_payees_delete: ['payees', 'search'],
   actual_payees_merge: ['payees', 'search'],
 
+  // Schedules
+  actual_schedules_create: ['schedules'],
+  actual_schedules_update: ['schedules'],
+  actual_schedules_delete: ['schedules'],
+
   // Rules
   actual_rules_create: ['rules'],
   actual_rules_create_or_update: ['rules'],
@@ -68,9 +74,11 @@ const WRITE_TOOL_TAGS: Record<string, CacheTag[]> = {
 };
 
 function resolveSearchDataDir(): string {
-  return process.env.SEARCH_INDEX_DIR
-    || process.env.MCP_BRIDGE_DATA_DIR
-    || './actual-data';
+  return resolveBudgetSearchIndexDir(
+    process.env.SEARCH_INDEX_DIR
+      || process.env.MCP_BRIDGE_DATA_DIR
+      || './actual-data',
+  );
 }
 
 function bumpPersistedDirtyGeneration(): void {

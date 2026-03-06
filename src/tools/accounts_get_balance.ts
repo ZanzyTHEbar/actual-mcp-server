@@ -4,6 +4,7 @@ import type { paths } from '../../generated/actual-client/types.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 import { safeGetOrFetch } from '../lib/search/index.js';
+import { budgetCacheKey } from '../lib/budgetContext.js';
 
 const InputSchema = z.object({
   id: z.string().min(1, 'Account ID is required').describe('The UUID of the account'),
@@ -34,7 +35,7 @@ Example:
     try {
       const input = InputSchema.parse(args || {});
       const cutoffKey = input.cutoff ?? 'current';
-      const balance = await safeGetOrFetch(`tool:balance:${input.id}:${cutoffKey}`, {
+      const balance = await safeGetOrFetch(budgetCacheKey(`tool:balance:${input.id}:${cutoffKey}`), {
         ttlMs: 2 * 60_000, // 2min — balances change frequently
         tags: ['accounts', 'transactions'],
         fetcher: () => adapter.getAccountBalance(input.id, input.cutoff),

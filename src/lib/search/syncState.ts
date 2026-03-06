@@ -1,3 +1,5 @@
+import { getCurrentBudgetKey } from '../budgetContext.js';
+
 /**
  * Budget-scoped sync state for the search index.
  *
@@ -47,7 +49,7 @@ export function hydrateSearchSyncState(
 export function getSearchSyncGenerations(
   budgetId?: string,
 ): { dirtyGeneration: number; syncedGeneration: number } | null {
-  const id = budgetId ?? _activeBudgetId;
+  const id = budgetId ?? _activeBudgetId ?? getCurrentBudgetKey();
   if (!id) return null;
   const state = getOrInitState(id);
   return {
@@ -57,7 +59,7 @@ export function getSearchSyncGenerations(
 }
 
 export function markSearchIndexDirty(budgetId?: string): number {
-  const id = budgetId ?? _activeBudgetId;
+  const id = budgetId ?? _activeBudgetId ?? getCurrentBudgetKey();
   if (!id) return 0;
   const state = getOrInitState(id);
   state.dirtyGeneration += 1;
@@ -65,14 +67,14 @@ export function markSearchIndexDirty(budgetId?: string): number {
 }
 
 export function isSearchIndexSynced(budgetId?: string): boolean {
-  const id = budgetId ?? _activeBudgetId;
+  const id = budgetId ?? _activeBudgetId ?? getCurrentBudgetKey();
   if (!id) return false;
   const state = getOrInitState(id);
   return state.syncedGeneration >= state.dirtyGeneration;
 }
 
 export function markSearchIndexSynced(budgetId?: string): void {
-  const id = budgetId ?? _activeBudgetId;
+  const id = budgetId ?? _activeBudgetId ?? getCurrentBudgetKey();
   if (!id) return;
   const state = getOrInitState(id);
   state.syncedGeneration = state.dirtyGeneration;
@@ -82,7 +84,7 @@ export function markSearchIndexSyncedIfGeneration(
   expectedDirtyGeneration: number,
   budgetId?: string,
 ): boolean {
-  const id = budgetId ?? _activeBudgetId;
+  const id = budgetId ?? _activeBudgetId ?? getCurrentBudgetKey();
   if (!id) return false;
   const state = getOrInitState(id);
   if (state.dirtyGeneration !== expectedDirtyGeneration) return false;

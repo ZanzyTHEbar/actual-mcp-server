@@ -34,6 +34,7 @@ import type {
 } from '../lib/search/index.js';
 import { toErrorResult } from '../lib/toolResult.js';
 import logger from '../logger.js';
+import { budgetCacheKey, getCurrentBudgetKey } from '../lib/budgetContext.js';
 
 /**
  * The Actual Budget `getTransactions()` API returns richer data than the
@@ -91,10 +92,10 @@ const _syncInFlight = new Map<string, Promise<void>>();
  * Called lazily on first search, then cached until invalidation.
  */
 async function ensureSynced(index: SearchIndex): Promise<void> {
-  const budgetId = process.env.ACTUAL_BUDGET_SYNC_ID ?? '__default__';
-  if (isSearchIndexSynced(budgetId)) return;
+  const budgetKey = getCurrentBudgetKey();
+  if (isSearchIndexSynced(budgetKey)) return;
 
-  const inFlight = _syncInFlight.get(budgetId);
+  const inFlight = _syncInFlight.get(budgetKey);
   if (inFlight) {
     await inFlight;
     return;
@@ -108,7 +109,7 @@ async function ensureSynced(index: SearchIndex): Promise<void> {
     logger.info('[HybridSearch] Syncing search index from Actual Budget…');
 
     const [accounts, categories, payees] = await Promise.all([
-      cache.getOrFetch<RefAccount[]>('ref:accounts', {
+      cache.getOrFetch<RefAccount[]>(budgetCacheKey('ref:accounts'), {
         ttlMs: 10 * 60_000,
         tags: ['accounts'],
         fetcher: async () => {
@@ -116,7 +117,7 @@ async function ensureSynced(index: SearchIndex): Promise<void> {
           return raw.filter((a) => a.id).map((a) => ({ id: a.id!, name: a.name ?? '' }));
         },
       }),
-      cache.getOrFetch<RefCategory[]>('ref:categories', {
+      cache.getOrFetch<RefCategory[]>(budgetCacheKey('ref:categories'), {
         ttlMs: 10 * 60_000,
         tags: ['categories'],
         fetcher: async () => {
@@ -129,7 +130,7 @@ async function ensureSynced(index: SearchIndex): Promise<void> {
           }));
         },
       }),
-      cache.getOrFetch<RefPayee[]>('ref:payees', {
+      cache.getOrFetch<RefPayee[]>(budgetCacheKey('ref:payees'), {
         ttlMs: 10 * 60_000,
         tags: ['payees'],
         fetcher: async () => {
@@ -177,10 +178,10 @@ async function ensureSynced(index: SearchIndex): Promise<void> {
     const pruned = index.pruneStale(currentIds);
 
     const persistedMarked = index.tryMarkSyncedGeneration(startDirtyGeneration);
-    const memoryMarked = markSearchIndexSyncedIfGeneration(startDirtyGeneration, budgetId);
+    const memoryMarked = markSearchIndexSyncedIfGeneration(startDirtyGeneration, budgetKey);
     if (!persistedMarked || !memoryMarked) {
       const versions = index.getSyncVersions();
-      hydrateSearchSyncState(budgetId, versions.dirtyGeneration, versions.syncedGeneration);
+      hydrateSearchSyncState(budgetKey, versions.dirtyGeneration, versions.syncedGeneration);
       logger.warn(
         '[HybridSearch] Sync completed but freshness changed during run; leaving index marked unsynced',
       );
@@ -193,11 +194,11 @@ async function ensureSynced(index: SearchIndex): Promise<void> {
     );
   })();
 
-  _syncInFlight.set(budgetId, syncPromise);
+  _syncInFlight.set(budgetKey, syncPromise);
   try {
     await syncPromise;
   } finally {
-    _syncInFlight.delete(budgetId);
+    _syncInFlight.delete(budgetKey);
   }
 }
 

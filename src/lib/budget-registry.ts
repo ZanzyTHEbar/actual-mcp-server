@@ -26,12 +26,65 @@
  * then `actual_budgets_switch` with the budget name to switch between them.
  */
 
+import { createHash } from 'crypto';
+
 export interface BudgetConfig {
   name: string;
   serverUrl: string;
   password: string;
   syncId: string;
   encryptionPassword?: string;
+}
+
+export interface BudgetHandle extends BudgetConfig {
+  budgetKey: string;
+}
+
+export interface BudgetDefaults {
+  serverUrl: string;
+  password: string;
+  syncId: string;
+  encryptionPassword?: string;
+}
+
+function normalizeBudgetName(name: string): string {
+  return name.trim().toLocaleLowerCase();
+}
+
+function assertUniqueBudgetName(
+  registry: Map<string, BudgetConfig>,
+  name: string,
+  sourceLabel: string,
+): void {
+  const normalized = normalizeBudgetName(name);
+  if (registry.has(normalized)) {
+    throw new Error(
+      `Duplicate budget name "${name}" from ${sourceLabel}. Budget names must be unique case-insensitively.`,
+    );
+  }
+}
+
+export function createBudgetKey(serverUrl: string, syncId: string): string {
+  return createHash('sha256')
+    .update(`${serverUrl}|${syncId}`)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+export function toBudgetHandle(config: BudgetConfig): BudgetHandle {
+  return {
+    ...config,
+    budgetKey: createBudgetKey(config.serverUrl, config.syncId),
+  };
+}
+
+export function buildDefaultBudgetDefaults(env: NodeJS.ProcessEnv): BudgetDefaults {
+  return {
+    serverUrl: env.ACTUAL_SERVER_URL || 'http://localhost:5006',
+    password: env.ACTUAL_PASSWORD || '',
+    syncId: env.ACTUAL_BUDGET_SYNC_ID || '',
+    encryptionPassword: env.ACTUAL_BUDGET_PASSWORD,
+  };
 }
 
 /**
@@ -41,18 +94,21 @@ export interface BudgetConfig {
  */
 export function parseBudgetRegistry(
   env: NodeJS.ProcessEnv,
-  defaults: { serverUrl: string; password: string; syncId: string; encryptionPassword?: string },
+  defaults: BudgetDefaults,
 ): Map<string, BudgetConfig> {
   const registry = new Map<string, BudgetConfig>();
 
   const defaultName = env.BUDGET_DEFAULT_NAME ?? 'Default';
-  registry.set(defaultName.toLowerCase(), {
-    name: defaultName,
-    serverUrl: defaults.serverUrl,
-    password: defaults.password,
-    syncId: defaults.syncId,
-    encryptionPassword: defaults.encryptionPassword,
-  });
+  if (defaults.syncId) {
+    assertUniqueBudgetName(registry, defaultName, 'default budget');
+    registry.set(normalizeBudgetName(defaultName), {
+      name: defaultName,
+      serverUrl: defaults.serverUrl,
+      password: defaults.password,
+      syncId: defaults.syncId,
+      encryptionPassword: defaults.encryptionPassword,
+    });
+  }
 
   let i = 1;
   while (env[`BUDGET_${i}_NAME`]) {
@@ -62,12 +118,12 @@ export function parseBudgetRegistry(
     const password = env[`${prefix}PASSWORD`] ?? defaults.password;
     const syncId = env[`${prefix}SYNC_ID`];
     if (!syncId) {
-      console.error(
-        `[CONFIG] BUDGET_${i}_SYNC_ID is required when BUDGET_${i}_NAME="${name}" is set`,
+      throw new Error(
+        `BUDGET_${i}_SYNC_ID is required when BUDGET_${i}_NAME="${name}" is set`,
       );
-      process.exit(1);
     }
-    registry.set(name.toLowerCase(), {
+    assertUniqueBudgetName(registry, name, `BUDGET_${i}_NAME`);
+    registry.set(normalizeBudgetName(name), {
       name,
       serverUrl,
       password,
@@ -77,5 +133,35 @@ export function parseBudgetRegistry(
     i++;
   }
 
+  if (registry.size === 0) {
+    throw new Error(
+      'No valid budgets configured. Set ACTUAL_BUDGET_SYNC_ID or configure at least one BUDGET_n_* entry.',
+    );
+  }
+
   return registry;
+}
+
+export function resolveBudgetByName(
+  registry: Map<string, BudgetConfig>,
+  requestedName: string,
+): { match: BudgetHandle | null; matches: BudgetHandle[] } {
+  const normalized = normalizeBudgetName(requestedName);
+  const exact = registry.get(normalized);
+  if (exact) {
+    return { match: toBudgetHandle(exact), matches: [toBudgetHandle(exact)] };
+  }
+
+  const matches = Array.from(registry.entries())
+    .filter(([name]) => name.includes(normalized))
+    .map(([, config]) => toBudgetHandle(config));
+
+  return {
+    match: matches.length === 1 ? matches[0] : null,
+    matches,
+  };
+}
+
+export function listBudgetHandles(registry: Map<string, BudgetConfig>): BudgetHandle[] {
+  return Array.from(registry.values()).map(toBudgetHandle);
 }

@@ -41,12 +41,19 @@ import {
   runQuery as rawRunQuery,
   runBankSync as rawRunBankSync,
   getBudgets as rawGetBudgets,
+  getSchedules as rawGetSchedules,
+  createSchedule as rawCreateSchedule,
+  updateSchedule as rawUpdateSchedule,
+  deleteSchedule as rawDeleteSchedule,
+  getServerVersion as rawGetServerVersion,
 } from '@actual-app/api/dist/methods.js';
 import api from '@actual-app/api';
 import { EventEmitter } from 'events';
 import observability from '../observability.js';
 import retry from './retry.js';
 import logger, { sanitizeError } from '../logger.js';
+import { getCurrentBudgetHandle, withBudgetContext } from './budgetContext.js';
+import type { BudgetHandle } from './budget-registry.js';
 
 /**
  * Helper to init and shutdown Actual API around each operation
@@ -95,16 +102,28 @@ async function withActualApi<T>(operation: () => Promise<T>): Promise<T> {
   });
 }
 
+async function withActualServerApi<T>(operation: () => Promise<T>): Promise<T> {
+  return withSessionLock(async () => {
+    await initActualServerForOperation();
+    try {
+      return await operation();
+    } finally {
+      await shutdownActualApi();
+    }
+  });
+}
+
 /**
  * Initialize Actual API - based on s-stefanov/actual-mcp pattern
  * This calls api.init() and api.downloadBudget() for each operation
  */
 async function initActualApiForOperation(): Promise<void> {
   try {
-    const SERVER_URL = process.env.ACTUAL_SERVER_URL || 'http://localhost:5006';
-    const PASSWORD = process.env.ACTUAL_PASSWORD;
-    const BUDGET_SYNC_ID = process.env.ACTUAL_BUDGET_SYNC_ID;
-    const BUDGET_PASSWORD = process.env.ACTUAL_BUDGET_PASSWORD;
+    const budget = getCurrentBudgetHandle();
+    const SERVER_URL = budget.serverUrl;
+    const PASSWORD = budget.password;
+    const BUDGET_SYNC_ID = budget.syncId;
+    const BUDGET_PASSWORD = budget.encryptionPassword;
     const DATA_DIR = process.env.MCP_BRIDGE_DATA_DIR || './test-actual-data';
 
     logger.debug('[ADAPTER] Initializing Actual API for operation');
@@ -153,6 +172,43 @@ async function initActualApiForOperation(): Promise<void> {
   }
 }
 
+async function initActualServerForOperation(): Promise<void> {
+  try {
+    const budget = getCurrentBudgetHandle();
+    const SERVER_URL = budget.serverUrl;
+    const PASSWORD = budget.password;
+    const DATA_DIR = process.env.MCP_BRIDGE_DATA_DIR || './test-actual-data';
+
+    logger.debug('[ADAPTER] Initializing Actual API server connection for operation');
+
+    await api.init({
+      dataDir: DATA_DIR,
+      serverURL: SERVER_URL,
+      password: PASSWORD || '',
+    });
+
+    logger.debug('[ADAPTER] Actual API server connection initialized');
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    const se = sanitizeError(err);
+    logger.error('[ADAPTER] Error initializing Actual API server connection: %s', se.message);
+
+    if (msg.includes('ACTUAL_SERVER_URL') || msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
+      throw new Error(
+        `Cannot connect to the Actual Budget server. Verify ACTUAL_SERVER_URL is correct and the server is running. ` +
+        `Original error: ${msg}`,
+      );
+    }
+    if (msg.includes('password') || msg.includes('401') || msg.includes('Unauthorized')) {
+      throw new Error(
+        `Authentication failed with the Actual Budget server. Check ACTUAL_PASSWORD. ` +
+        `Original error: ${msg}`,
+      );
+    }
+    throw err;
+  }
+}
+
 async function shutdownActualApi(): Promise<void> {
   try {
     const maybeApi = api as unknown as { shutdown?: Function };
@@ -182,6 +238,7 @@ const queue: Array<() => void> = [];
  * This ensures write operations share a single budget session to avoid race conditions
  */
 interface WriteOperation<T> {
+  budget: BudgetHandle;
   operation: () => Promise<T>;
   resolve: (value: T) => void;
   reject: (error: any) => void;
@@ -203,20 +260,24 @@ async function processWriteQueue() {
     writeSessionTimeout = null;
   }
 
-  const batch = writeQueue.splice(0, writeQueue.length); // Take all current items
-  logger.debug(`[WRITE QUEUE] Processing batch of ${batch.length} operations`);
+  const first = writeQueue[0];
+  const batch = writeQueue.filter((item) => item.budget.budgetKey === first.budget.budgetKey);
+  writeQueue = writeQueue.filter((item) => item.budget.budgetKey !== first.budget.budgetKey);
+  logger.debug(
+    `[WRITE QUEUE] Processing batch of ${batch.length} operations for budget ${first.budget.budgetKey}`,
+  );
 
   try {
-    await withSessionLock(async () => {
+    await withBudgetContext(first.budget, () => withSessionLock(async () => {
       // Initialize API once for all queued writes
       await initActualApiForOperation();
 
       // Process all queued writes in the same session
       // Each operation handles its own success/failure
       await Promise.allSettled(
-        batch.map(async ({ operation, resolve, reject }) => {
+        batch.map(async ({ budget, operation, resolve, reject }) => {
           try {
-            const result = await operation();
+            const result = await withBudgetContext(budget, () => operation());
             resolve(result);
           } catch (error) {
             logger.error('[WRITE QUEUE] Operation failed:', error);
@@ -239,7 +300,7 @@ async function processWriteQueue() {
 
       // Shutdown after all writes complete and sync
       await shutdownActualApi();
-    });
+    }));
     logger.debug(`[WRITE QUEUE] Batch completed successfully`);
   } catch (error) {
     logger.error('[WRITE QUEUE] Fatal error in write queue:', error);
@@ -263,8 +324,9 @@ async function processWriteQueue() {
 }
 
 function queueWriteOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const budget = getCurrentBudgetHandle();
   return new Promise((resolve, reject) => {
-    writeQueue.push({ operation, resolve, reject });
+    writeQueue.push({ budget, operation, resolve, reject });
 
     // Clear existing timeout
     if (writeSessionTimeout) {
@@ -976,10 +1038,51 @@ export async function runBankSync(accountId?: string): Promise<void> {
   });
 }
 export async function getBudgets(): Promise<unknown[]> {
-  return withActualApi(async () => {
+  return withActualServerApi(async () => {
     observability.incrementToolCall('actual.budgets.getAll').catch(() => { });
     const raw = await withConcurrency(() => retry(() => rawGetBudgets() as Promise<unknown>, { retries: 2, backoffMs: 200 }));
     return Array.isArray(raw) ? raw : [];
+  });
+}
+
+export async function getSchedules(): Promise<unknown[]> {
+  return withActualApi(async () => {
+    observability.incrementToolCall('actual.schedules.get').catch(() => { });
+    const raw = await withConcurrency(() => retry(() => rawGetSchedules() as Promise<unknown>, { retries: 2, backoffMs: 200 }));
+    return Array.isArray(raw) ? raw : [];
+  });
+}
+
+export async function createSchedule(schedule: unknown): Promise<string> {
+  observability.incrementToolCall('actual.schedules.create').catch(() => { });
+  return queueWriteOperation(async () => {
+    const raw = await withConcurrency(() => retry(() => rawCreateSchedule(schedule) as Promise<string | { id?: string }>, { retries: 2, backoffMs: 200 }));
+    return normalizeToId(raw);
+  });
+}
+
+export async function updateSchedule(
+  id: string,
+  fields: unknown,
+  resetNextDate = false,
+): Promise<void> {
+  observability.incrementToolCall('actual.schedules.update').catch(() => { });
+  return queueWriteOperation(async () => {
+    await withConcurrency(() => retry(() => rawUpdateSchedule(id, fields, resetNextDate) as Promise<void>, { retries: 2, backoffMs: 200 }));
+  });
+}
+
+export async function deleteSchedule(id: string): Promise<void> {
+  observability.incrementToolCall('actual.schedules.delete').catch(() => { });
+  return queueWriteOperation(async () => {
+    await withConcurrency(() => retry(() => rawDeleteSchedule(id) as Promise<void>, { retries: 2, backoffMs: 200 }));
+  });
+}
+
+export async function getServerVersion(): Promise<unknown> {
+  return withActualServerApi(async () => {
+    observability.incrementToolCall('actual.server.getVersion').catch(() => { });
+    return withConcurrency(() => retry(() => rawGetServerVersion() as Promise<unknown>, { retries: 2, backoffMs: 200 }));
   });
 }
 
@@ -1024,5 +1127,10 @@ export default {
   runQuery,
   runBankSync,
   getBudgets,
+  getSchedules,
+  createSchedule,
+  updateSchedule,
+  deleteSchedule,
+  getServerVersion,
   notifications,
 };

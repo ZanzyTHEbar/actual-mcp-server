@@ -4,6 +4,7 @@ import type { paths } from '../../generated/actual-client/types.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 import { safeGetOrFetch } from '../lib/search/index.js';
+import { budgetCacheKey } from '../lib/budgetContext.js';
 
 const InputSchema = z.object({});
 
@@ -16,7 +17,7 @@ const tool: ToolDefinition = {
   inputSchema: InputSchema,
   call: wrapToolCall(async (args: unknown, _meta?: unknown) => {
     InputSchema.parse(args || {});
-    const result = await safeGetOrFetch('tool:budgets_getMonths', {
+    const result = await safeGetOrFetch(budgetCacheKey('tool:budgets_getMonths'), {
       ttlMs: 5 * 60_000,
       tags: ['budgets'],
       fetcher: () => adapter.getBudgetMonths(),

@@ -229,6 +229,7 @@ export type CacheTag =
   | 'categories'
   | 'category_groups'
   | 'payees'
+  | 'schedules'
   | 'transactions'
   | 'budgets'
   | 'rules'

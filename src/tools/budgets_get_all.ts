@@ -3,6 +3,7 @@ import { wrapToolCall } from '../lib/wrapToolCall.js';
 import type { ToolDefinition } from '../../types/tool.d.js';
 import adapter from '../lib/actual-adapter.js';
 import { safeGetOrFetch } from '../lib/search/index.js';
+import { serverCacheKey } from '../lib/budgetContext.js';
 
 const InputSchema = z.object({});
 
@@ -13,7 +14,7 @@ const tool: ToolDefinition = {
   description: 'Get a list of all available budget files. Useful for multi-budget management and discovering available budgets on the server.',
   inputSchema: InputSchema,
   call: wrapToolCall(async (_args: unknown, _meta?: unknown) => {
-    const result = await safeGetOrFetch('tool:budgets_get_all', {
+    const result = await safeGetOrFetch(serverCacheKey('tool:budgets_get_all'), {
       ttlMs: 5 * 60_000,
       tags: ['budgets'],
       fetcher: () => adapter.getBudgets(),

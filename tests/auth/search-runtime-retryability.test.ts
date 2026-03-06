@@ -3,6 +3,7 @@ import {
   _resetSearchRuntimeForTests,
   getSearchRuntime,
 } from '../../src/lib/search/searchRuntime.js';
+import { withBudgetContext } from '../../src/lib/budgetContext.js';
 
 const state = vi.hoisted(() => ({
   failFirstInit: true,
@@ -22,6 +23,7 @@ const state = vi.hoisted(() => ({
     }),
   })),
   mockDb: {},
+  searchIndexDirs: [] as string[],
 }));
 
 vi.mock('../../src/lib/search/providers/factory.js', () => ({
@@ -34,7 +36,9 @@ vi.mock('../../src/lib/search/EmbeddingPipeline.js', () => ({
 
 vi.mock('../../src/lib/search/SearchIndex.js', () => {
   class MockSearchIndex {
-    constructor(..._args: unknown[]) {}
+    constructor(dataDir: string, ..._args: unknown[]) {
+      state.searchIndexDirs.push(dataDir);
+    }
 
     open() {
       if (state.failFirstInit) {
@@ -43,7 +47,7 @@ vi.mock('../../src/lib/search/SearchIndex.js', () => {
       }
     }
 
-    close() {}
+    close() { }
 
     getDb() {
       return state.mockDb;
@@ -59,7 +63,7 @@ vi.mock('../../src/lib/search/SearchIndex.js', () => {
 
 vi.mock('../../src/lib/search/HybridSearchEngine.js', () => ({
   HybridSearchEngine: class MockHybridSearchEngine {
-    constructor(..._args: unknown[]) {}
+    constructor(..._args: unknown[]) { }
   },
 }));
 
@@ -83,6 +87,7 @@ describe('searchRuntime initialization retryability', () => {
     _resetSearchRuntimeForTests();
     state.failFirstInit = true;
     state.createProvider.mockClear();
+    state.searchIndexDirs.length = 0;
   });
 
   it('retries initialization after first failure', async () => {
@@ -93,5 +98,33 @@ describe('searchRuntime initialization retryability', () => {
       provider: expect.objectContaining({ providerId: 'mock' }),
     });
     expect(state.createProvider).toHaveBeenCalledTimes(2);
+  });
+
+  it('creates isolated runtimes per budget key', async () => {
+    state.failFirstInit = false;
+    const defaultBudget = {
+      name: 'Default',
+      serverUrl: 'http://localhost:5006',
+      password: '',
+      syncId: 'budget-a',
+      budgetKey: 'budget-a-key',
+    };
+    const officeBudget = {
+      name: 'Office',
+      serverUrl: 'http://localhost:5006',
+      password: '',
+      syncId: 'budget-b',
+      budgetKey: 'budget-b-key',
+    };
+
+    const runtimeA = await withBudgetContext(defaultBudget, () => getSearchRuntime());
+    const runtimeB = await withBudgetContext(officeBudget, () => getSearchRuntime());
+    const runtimeAAgain = await withBudgetContext(defaultBudget, () => getSearchRuntime());
+
+    expect(runtimeA.index).not.toBe(runtimeB.index);
+    expect(runtimeA.engine).not.toBe(runtimeB.engine);
+    expect(runtimeA.index).toBe(runtimeAAgain.index);
+    expect(state.searchIndexDirs.some((dir) => dir.includes('budget-a-key'))).toBe(true);
+    expect(state.searchIndexDirs.some((dir) => dir.includes('budget-b-key'))).toBe(true);
   });
 });

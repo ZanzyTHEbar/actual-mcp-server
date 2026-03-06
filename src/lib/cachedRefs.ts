@@ -12,15 +12,17 @@ import type { components } from '../../generated/actual-client/types.js';
 import { safeGetOrFetch } from './search/index.js';
 import type { CacheTag } from './search/types.js';
 import adapter from './actual-adapter.js';
+import { budgetCacheKey } from './budgetContext.js';
 
 type RefAccount = components['schemas']['Account'];
 type RefPayee = components['schemas']['Payee'];
 type RefCategory = components['schemas']['Category'];
+type RefSchedule = { id?: string; name?: string };
 
 const REF_TTL_MS = 10 * 60_000; // 10 minutes
 
 export async function getCachedAccounts(): Promise<RefAccount[]> {
-  return safeGetOrFetch('ref:accounts', {
+  return safeGetOrFetch(budgetCacheKey('ref:accounts'), {
     ttlMs: REF_TTL_MS,
     tags: ['accounts'] as CacheTag[],
     fetcher: () => adapter.getAccounts(),
@@ -28,7 +30,7 @@ export async function getCachedAccounts(): Promise<RefAccount[]> {
 }
 
 export async function getCachedPayees(): Promise<RefPayee[]> {
-  return safeGetOrFetch('ref:payees', {
+  return safeGetOrFetch(budgetCacheKey('ref:payees'), {
     ttlMs: REF_TTL_MS,
     tags: ['payees'] as CacheTag[],
     fetcher: () => adapter.getPayees(),
@@ -36,7 +38,7 @@ export async function getCachedPayees(): Promise<RefPayee[]> {
 }
 
 export async function getCachedCategories(): Promise<RefCategory[]> {
-  return safeGetOrFetch('ref:categories', {
+  return safeGetOrFetch(budgetCacheKey('ref:categories'), {
     ttlMs: REF_TTL_MS,
     tags: ['categories'] as CacheTag[],
     fetcher: () => adapter.getCategories(),
@@ -44,10 +46,21 @@ export async function getCachedCategories(): Promise<RefCategory[]> {
 }
 
 export async function getCachedCategoryGroups(): Promise<unknown[]> {
-  return safeGetOrFetch('ref:categoryGroups', {
+  return safeGetOrFetch(budgetCacheKey('ref:categoryGroups'), {
     ttlMs: REF_TTL_MS,
     tags: ['categories'] as CacheTag[],
     fetcher: () => adapter.getCategoryGroups(),
+  });
+}
+
+export async function getCachedSchedules(): Promise<RefSchedule[]> {
+  return safeGetOrFetch(budgetCacheKey('ref:schedules'), {
+    ttlMs: REF_TTL_MS,
+    tags: ['schedules'] as CacheTag[],
+    fetcher: async () => {
+      const schedules = await adapter.getSchedules();
+      return Array.isArray(schedules) ? (schedules as RefSchedule[]) : [];
+    },
   });
 }
 
@@ -73,4 +86,13 @@ export async function getCategoryMap(): Promise<Map<string, RefCategory>> {
 export async function getCategoryGroupMap(): Promise<Map<string, unknown>> {
   const groups = await getCachedCategoryGroups();
   return new Map((groups as any[]).map((g) => [g.id, g]));
+}
+
+export async function getScheduleMap(): Promise<Map<string, string>> {
+  const schedules = await getCachedSchedules();
+  return new Map(
+    schedules
+      .filter((s) => s.id)
+      .map((s) => [s.id!, typeof s.name === 'string' ? s.name : ''])
+  );
 }

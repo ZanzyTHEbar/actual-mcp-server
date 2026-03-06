@@ -10,6 +10,7 @@ type MockWorkerLike = {
 
 const mockState = vi.hoisted(() => ({
   workers: [] as MockWorkerLike[],
+  allowedBudgets: null as string[] | null,
 }));
 
 vi.mock('worker_threads', () => {
@@ -54,6 +55,7 @@ vi.mock('../../src/logger.js', () => ({
 
 vi.mock('../../src/auth/budget-acl.js', () => ({
   canAccessBudget: vi.fn(() => true),
+  getAllowedBudgets: vi.fn(() => mockState.allowedBudgets),
 }));
 
 function getLastWorker(): MockWorkerLike {
@@ -65,7 +67,12 @@ function getLastWorker(): MockWorkerLike {
 describe('SessionWorkerManager lifecycle reliability', () => {
   beforeEach(() => {
     mockState.workers.length = 0;
+    mockState.allowedBudgets = null;
     vi.clearAllMocks();
+    process.env.BUDGET_1_NAME = 'Office';
+    process.env.BUDGET_1_SYNC_ID = 'office-budget-456';
+    process.env.BUDGET_1_SERVER_URL = 'http://localhost:5006';
+    process.env.BUDGET_1_PASSWORD = '';
   });
 
   it('rejects pending requests when worker emits error', async () => {
@@ -163,10 +170,143 @@ describe('SessionWorkerManager lifecycle reliability', () => {
     });
     await executePromise;
 
-    expect(writerWorker.postMessage).toHaveBeenCalledWith(
+    expect(writerWorker.postMessage.mock.calls.map((call) => call[0]?.type)).not.toContain('markSearchDirty');
+    expect(readerWorker.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'markSearchDirty' }),
     );
-    expect(readerWorker.postMessage).toHaveBeenCalledWith(
+  });
+
+  it('switches the active budget for a session and exposes it in stats', async () => {
+    const manager = new SessionWorkerManager({
+      maxSessions: 2,
+      baseDataDir: './test-tmp',
+      toolCallTimeoutMs: 10_000,
+    });
+    await manager.createSession('session-budget');
+
+    const switched = manager.switchSessionBudget('session-budget', 'Office');
+    expect(switched.name).toBe('Office');
+    expect(switched.syncId).toBe('office-budget-456');
+
+    const stats = manager.getStats();
+    expect(stats.sessions[0].activeBudget.name).toBe('Office');
+    expect(stats.sessions[0].activeBudget.syncId).toBe('office-budget-456');
+  });
+
+  it('selects the first ACL-allowed budget during session creation', async () => {
+    mockState.allowedBudgets = ['office-budget-456'];
+    const manager = new SessionWorkerManager({
+      maxSessions: 2,
+      baseDataDir: './test-tmp',
+      toolCallTimeoutMs: 10_000,
+    });
+
+    await manager.createSession('session-acl-budget', {
+      userId: 'allowed@example.com',
+      email: 'allowed@example.com',
+    });
+
+    const stats = manager.getStats();
+    expect(stats.sessions[0].activeBudget.name).toBe('Office');
+    expect(stats.sessions[0].activeBudget.syncId).toBe('office-budget-456');
+  });
+
+  it('only broadcasts dirty signals to sessions on the same budget', async () => {
+    const manager = new SessionWorkerManager({
+      maxSessions: 5,
+      baseDataDir: './test-tmp',
+      toolCallTimeoutMs: 10_000,
+    });
+
+    await manager.createSession('writer-default');
+    const writerWorker = getLastWorker();
+    await manager.createSession('reader-default');
+    const sameBudgetWorker = getLastWorker();
+    await manager.createSession('reader-office');
+    const differentBudgetWorker = getLastWorker();
+    manager.switchSessionBudget('reader-office', 'Office');
+
+    const executePromise = manager.executeTool('writer-default', 'actual_transactions_update', {
+      id: 'txn-2',
+    });
+
+    await vi.waitFor(() => {
+      expect(writerWorker.postMessage).toHaveBeenCalled();
+    });
+
+    const executeMsg = writerWorker.postMessage.mock.calls[0][0] as { requestId: string };
+    writerWorker.emit('message', {
+      type: 'toolResult',
+      requestId: executeMsg.requestId,
+      result: { content: [{ type: 'text', text: 'ok' }] },
+    });
+    await executePromise;
+
+    expect(sameBudgetWorker.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'markSearchDirty' }),
+    );
+    expect(differentBudgetWorker.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'markSearchDirty' }),
+    );
+  });
+
+  it('returns unified response shapes for budget list and switch fast paths', async () => {
+    const manager = new SessionWorkerManager({
+      maxSessions: 2,
+      baseDataDir: './test-tmp',
+      toolCallTimeoutMs: 10_000,
+    });
+    await manager.createSession('session-budget-tools');
+
+    const listResult = await manager.executeTool('session-budget-tools', 'actual_budgets_list_available', {});
+    const listText = listResult.content?.find((entry) => entry.type === 'text')?.text ?? '';
+    expect(listText).toContain('"hint"');
+
+    const switchResult = await manager.executeTool('session-budget-tools', 'actual_budgets_switch', {
+      budgetName: 'Office',
+    });
+    const switchText = switchResult.content?.find((entry) => entry.type === 'text')?.text ?? '';
+    expect(switchText).toContain('"budgetKey"');
+    expect(switchText).toContain('"budgetName"');
+  });
+
+  it('uses the dispatched budget for dirty broadcast even if the session switches before completion', async () => {
+    const manager = new SessionWorkerManager({
+      maxSessions: 5,
+      baseDataDir: './test-tmp',
+      toolCallTimeoutMs: 10_000,
+    });
+
+    await manager.createSession('writer-default');
+    const writerWorker = getLastWorker();
+    await manager.createSession('reader-default');
+    const defaultReaderWorker = getLastWorker();
+    await manager.createSession('reader-office');
+    const officeReaderWorker = getLastWorker();
+    manager.switchSessionBudget('reader-office', 'Office');
+
+    const executePromise = manager.executeTool('writer-default', 'actual_transactions_update', {
+      id: 'txn-3',
+    });
+
+    await vi.waitFor(() => {
+      expect(writerWorker.postMessage).toHaveBeenCalled();
+    });
+
+    manager.switchSessionBudget('writer-default', 'Office');
+
+    const executeMsg = writerWorker.postMessage.mock.calls[0][0] as { requestId: string };
+    writerWorker.emit('message', {
+      type: 'toolResult',
+      requestId: executeMsg.requestId,
+      result: { content: [{ type: 'text', text: 'ok' }] },
+    });
+    await executePromise;
+
+    expect(defaultReaderWorker.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'markSearchDirty' }),
+    );
+    expect(officeReaderWorker.postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'markSearchDirty' }),
     );
   });
