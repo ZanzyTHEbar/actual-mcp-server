@@ -21,20 +21,24 @@ console.log('Running generated tools smoke tests');
     getPayees: [{ id: 'p1', name: 'Kroger' }],
     getCommonPayees: [{ id: 'p1', name: 'Kroger' }],
     getPayeeRules: [{ id: 'rule1', conditions: [] }],
+    getSchedules: [{ id: 'sched1', name: 'Rent' }],
     createPayee: 'p-new',
+    createSchedule: 'sched-new',
     deletePayee: null,
+    deleteSchedule: null,
     updatePayee: null,
+    updateSchedule: null,
     mergePayees: null,
     getRules: [{ id: 'rule1', conditions: [] }],
     createRule: 'rule-new',
     deleteRule: null,
     updateRule: null,
     getBudgetMonths: ['2025-12'],
-    getBudgetMonth: { 
-      month: '2025-12', 
+    getBudgetMonth: {
+      month: '2025-12',
       categoryGroups: [
-        { 
-          id: 'grp_1', 
+        {
+          id: 'grp_1',
           name: 'Test Group',
           categories: [
             { id: 'cat_1', name: 'Category 1', budgeted: 1000 },
@@ -59,6 +63,7 @@ console.log('Running generated tools smoke tests');
     runQuery: [{ id: 'result1', value: 100 }],
     runBankSync: null,
     getBudgets: [{ id: 'budget1', name: 'My Budget' }],
+    getServerVersion: { version: '25.0.0' },
   };
 
   // Patch adapter default export functions
@@ -78,53 +83,58 @@ console.log('Running generated tools smoke tests');
       continue;
     }
     try {
-  let mod = toolsIndex[name];
-  // some bundlers/export patterns export the tool object directly, others as default
-  if (mod && mod.default) mod = mod.default;
+      let mod = toolsIndex[name];
+      // some bundlers/export patterns export the tool object directly, others as default
+      if (mod && mod.default) mod = mod.default;
       const inputExample = {};
       // Provide minimal examples for known tools (use UUIDs where schemas require them)
-  if (name.includes('transactions_create')) inputExample.account = '00000000-0000-0000-0000-000000000001', inputExample.date = '2025-11-24', inputExample.amount = -1234;
-  if (name.includes('transactions_import')) inputExample.accountId = '00000000-0000-0000-0000-000000000001', inputExample.transactions = [{ amount: 100 }];
-  if (name.includes('transactions_get')) inputExample.accountId = '00000000-0000-0000-0000-000000000001';
-  if (name.includes('transactions_delete')) inputExample.id = '00000000-0000-0000-0000-000000000001';
-  if (name.includes('transactions_update')) inputExample.id = '00000000-0000-0000-0000-000000000001', inputExample.fields = { notes: 'test' };
-  if (name.includes('transactions_update_batch')) inputExample.updates = [{ id: '00000000-0000-0000-0000-000000000001', fields: { notes: 'test' } }];
-  if (name.includes('accounts_get_balance')) inputExample.id = '00000000-0000-0000-0000-000000000001';
-  if (name.includes('accounts_create')) inputExample.name = 'New';
-  if (name.includes('accounts_update')) inputExample.id = '00000000-0000-0000-0000-000000000001', inputExample.fields = { name: 'Updated Name' };
-  if (name.includes('accounts_delete')) inputExample.id = '00000000-0000-0000-0000-000000000001';
-  if (name.includes('accounts_close')) inputExample.id = '00000000-0000-0000-0000-000000000001';
-  if (name.includes('accounts_reopen')) inputExample.id = '00000000-0000-0000-0000-000000000001';
-  if (name.includes('categories_create')) inputExample.name = 'Food', inputExample.group_id = '00000000-0000-0000-0000-000000000001';
-  if (name.includes('categories_delete')) inputExample.id = '00000000-0000-0000-0000-000000000001';
-  if (name.includes('categories_update')) inputExample.id = 'cat_1', inputExample.fields = { name: 'Updated' };
-  if (name.includes('category_groups_create')) inputExample.name = 'Expenses';
-  if (name.includes('category_groups_delete')) inputExample.id = 'grp_1';
-  if (name.includes('category_groups_update')) inputExample.id = 'grp_1', inputExample.fields = { name: 'Updated' };
-  if (name.includes('payees_create')) inputExample.name = 'Kroger';
-  if (name.includes('payees_delete')) inputExample.id = 'p_1';
-  if (name.includes('payees_update')) inputExample.id = '00000000-0000-0000-0000-000000000001', inputExample.fields = { name: 'Updated' };
-  if (name.includes('payees_merge')) inputExample.targetId = 'p_1', inputExample.mergeIds = ['p_2', 'p_3'];
-  if (name.includes('payee_rules_get')) inputExample.payeeId = 'p_1';
-  if (name.includes('rules_create')) inputExample.conditions = [{ field: 'description', op: 'contains', value: 'test' }], inputExample.actions = [{ op: 'set', field: 'category', value: '00000000-0000-0000-0000-000000000001' }];
-  if (name.includes('rules_delete')) inputExample.id = 'rule_1';
-  if (name.includes('rules_update')) inputExample.id = 'rule_1', inputExample.fields = { conditions: [] };
-  if (name.includes('budgets_setAmount')) inputExample.month = '2025-12', inputExample.categoryId = 'cat_1', inputExample.amount = 100;
-  if (name.includes('budgets_getMonth')) inputExample.month = '2025-12';
-  if (name.includes('budget_updates_batch')) inputExample.operations = [{ month: '2025-12', categoryId: 'cat_1', amount: 100 }];
-  if (name.includes('budgets_holdForNextMonth')) inputExample.month = '2025-12', inputExample.categoryId = 'cat_1';
-  if (name.includes('budgets_resetHold')) inputExample.month = '2025-12', inputExample.categoryId = 'cat_1';
-  if (name.includes('budgets_setCarryover')) inputExample.month = '2025-12', inputExample.categoryId = 'cat_1', inputExample.flag = true;
-  if (name.includes('budgets_transfer')) inputExample.month = '2025-12', inputExample.fromCategoryId = 'cat_1', inputExample.toCategoryId = 'cat_2', inputExample.amount = 100;
-  if (name.includes('query_run')) inputExample.query = 'SELECT * FROM transactions LIMIT 10';
-  if (name.includes('bank_sync')) inputExample.accountId = 'acct_1';
-  if (name.includes('search_similar')) inputExample.transactionId = '00000000-0000-0000-0000-000000000001';
-  if (name.includes('meta_tool_call')) inputExample.toolName = 'actual_accounts_list', inputExample.arguments = {};
+      if (name.includes('transactions_create')) inputExample.account = '00000000-0000-0000-0000-000000000001', inputExample.date = '2025-11-24', inputExample.amount = -1234;
+      if (name.includes('transactions_import')) inputExample.accountId = '00000000-0000-0000-0000-000000000001', inputExample.transactions = [{ amount: 100 }];
+      if (name.includes('transactions_get')) inputExample.accountId = '00000000-0000-0000-0000-000000000001';
+      if (name.includes('transactions_delete')) inputExample.id = '00000000-0000-0000-0000-000000000001';
+      if (name.includes('transactions_update')) inputExample.id = '00000000-0000-0000-0000-000000000001', inputExample.fields = { notes: 'test' };
+      if (name.includes('transactions_update_batch')) inputExample.updates = [{ id: '00000000-0000-0000-0000-000000000001', fields: { notes: 'test' } }];
+      if (name.includes('accounts_get_balance')) inputExample.id = '00000000-0000-0000-0000-000000000001';
+      if (name.includes('accounts_create')) inputExample.name = 'New';
+      if (name.includes('accounts_update')) inputExample.id = '00000000-0000-0000-0000-000000000001', inputExample.fields = { name: 'Updated Name' };
+      if (name.includes('accounts_delete')) inputExample.id = '00000000-0000-0000-0000-000000000001';
+      if (name.includes('accounts_close')) inputExample.id = '00000000-0000-0000-0000-000000000001';
+      if (name.includes('accounts_reopen')) inputExample.id = '00000000-0000-0000-0000-000000000001';
+      if (name.includes('categories_create')) inputExample.name = 'Food', inputExample.group_id = '00000000-0000-0000-0000-000000000001';
+      if (name.includes('categories_delete')) inputExample.id = '00000000-0000-0000-0000-000000000001';
+      if (name.includes('categories_update')) inputExample.id = 'cat_1', inputExample.fields = { name: 'Updated' };
+      if (name.includes('category_groups_create')) inputExample.name = 'Expenses';
+      if (name.includes('category_groups_delete')) inputExample.id = 'grp_1';
+      if (name.includes('category_groups_update')) inputExample.id = 'grp_1', inputExample.fields = { name: 'Updated' };
+      if (name.includes('payees_create')) inputExample.name = 'Kroger';
+      if (name.includes('payees_delete')) inputExample.id = 'p_1';
+      if (name.includes('payees_update')) inputExample.id = '00000000-0000-0000-0000-000000000001', inputExample.fields = { name: 'Updated' };
+      if (name.includes('payees_merge')) inputExample.targetId = 'p_1', inputExample.mergeIds = ['p_2', 'p_3'];
+      if (name.includes('payee_rules_get')) inputExample.payeeId = 'p_1';
+      if (name.includes('rules_create')) inputExample.conditions = [{ field: 'description', op: 'contains', value: 'test' }], inputExample.actions = [{ op: 'set', field: 'category', value: '00000000-0000-0000-0000-000000000001' }];
+      if (name.includes('rules_delete')) inputExample.id = 'rule_1';
+      if (name.includes('rules_update')) inputExample.id = 'rule_1', inputExample.fields = { conditions: [] };
+      if (name.includes('budgets_setAmount')) inputExample.month = '2025-12', inputExample.categoryId = 'cat_1', inputExample.amount = 100;
+      if (name.includes('budgets_getMonth')) inputExample.month = '2025-12';
+  if (name.includes('budgets_switch')) inputExample.budgetName = 'Default';
+      if (name.includes('budget_updates_batch')) inputExample.operations = [{ month: '2025-12', categoryId: 'cat_1', amount: 100 }];
+      if (name.includes('budgets_holdForNextMonth')) inputExample.month = '2025-12', inputExample.categoryId = 'cat_1';
+      if (name.includes('budgets_resetHold')) inputExample.month = '2025-12', inputExample.categoryId = 'cat_1';
+      if (name.includes('budgets_setCarryover')) inputExample.month = '2025-12', inputExample.categoryId = 'cat_1', inputExample.flag = true;
+      if (name.includes('budgets_transfer')) inputExample.month = '2025-12', inputExample.fromCategoryId = 'cat_1', inputExample.toCategoryId = 'cat_2', inputExample.amount = 100;
+      if (name.includes('query_run')) inputExample.query = 'SELECT * FROM transactions LIMIT 10';
+      if (name.includes('bank_sync')) inputExample.accountId = 'acct_1';
+      if (name.includes('schedules_create')) inputExample.name = 'Rent', inputExample.date = '2025-12-01';
+      if (name.includes('schedules_update')) inputExample.id = '00000000-0000-0000-0000-000000000001', inputExample.name = 'Updated Rent';
+      if (name.includes('schedules_delete')) inputExample.id = '00000000-0000-0000-0000-000000000001';
+      if (name.includes('get_id_by_name')) inputExample.type = 'accounts', inputExample.name = 'Cash';
+      if (name.includes('search_similar')) inputExample.transactionId = '00000000-0000-0000-0000-000000000001';
+      if (name.includes('meta_tool_call')) inputExample.toolName = 'actual_accounts_list', inputExample.arguments = {};
 
       // Validate input parsing
-  try { mod.inputSchema.parse(inputExample); } catch (e) { /* ignore parse errors for optional inputs */ }
+      try { mod.inputSchema.parse(inputExample); } catch (e) { /* ignore parse errors for optional inputs */ }
 
-  const res = await mod.call(inputExample);
+      const res = await mod.call(inputExample);
       // ensure result serializable
       JSON.stringify(res);
       console.log('OK', name);
